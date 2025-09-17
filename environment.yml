@@ -25,4 +25,4 @@ dependencies:
   - pip:
     # install kagglehub through pip to get the lateset version.
     - kagglehub==0.3.13
-    - -e .
+    # - -e .
