@@ -9,7 +9,7 @@ TEST_SPLIT_RATIO = 0.1
 ATTENTION_WINDOW_SIZE = 256
 BATCH_SIZE = 64
 N_EMBEDING_DIMS = 384
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 3e-4
 N_TRAINING_STEPS = 5000
 LOGGING_INTERVAL = 500
 MLP_EXPANTION_RATIO = 4
@@ -74,12 +74,13 @@ class MaskedAttentionHead(nn.Module):
         self.dropout = nn.Dropout(dropout_ratio)
 
     def forward(self, x: Tensor) -> Tensor:
+        seq_len = x.shape[1]
         keys: Tensor = self.keys_projection(x)
         queries = self.queries_projection(x)
         values = self.values_projection(x)
         attention_weights = queries @ keys.swapaxes(1, 2)
         attention_weights /= sqrt(self.head_size)
-        attention_weights = torch.masked_fill(attention_weights, self.mask == 0, float('-inf'))
+        attention_weights = torch.masked_fill(attention_weights, self.mask[:seq_len, :seq_len] == 0, float('-inf'))
         attention_weights = F.softmax(attention_weights, dim=-1)
         attention_weights = self.dropout(attention_weights)
         out = attention_weights @ values
@@ -92,7 +93,8 @@ class MLPBlock(nn.Sequential):
         super().__init__(
             nn.Linear(N_EMBEDING_DIMS, n_expanded_dims),
             nn.ReLU(),
-            nn.Dropout(dropout_ratio), # Small diviation from Andrej Karpathy's repo where the dropout is at the end.
+            # Small diviation from Andrej Karpathy's repo where the dropout is at the end.
+            nn.Dropout(dropout_ratio), 
             nn.Linear(n_expanded_dims, N_EMBEDING_DIMS),
         )
 
@@ -101,15 +103,16 @@ class GPT(nn.Module):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_len, N_EMBEDING_DIMS)
         self.positional_embedding = nn.Embedding(ATTENTION_WINDOW_SIZE, N_EMBEDING_DIMS)
-        self.register_buffer("token_positions", torch.arange(ATTENTION_WINDOW_SIZE, device=device))
         self.attention_head = MaskedAttentionHead(1024)
         self.post_head_projection = nn.Linear(1024, N_EMBEDING_DIMS)
         self.mlp = MLPBlock(MLP_EXPANTION_RATIO, 0.15)
         self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, vocab_len)
 
     def forward(self, tokens_idx: Tensor) -> Tensor:
+        seq_len = tokens_idx.shape[1]
+        token_postions = torch.arange(seq_len, device=device)
+        positional_embedded_tokens = self.positional_embedding(token_postions)
         value_embedded_tokens = self.token_embedding(tokens_idx)
-        positional_embedded_tokens = self.positional_embedding(self.token_positions)
         attended = self.attention_head(value_embedded_tokens + positional_embedded_tokens)
         stream = self.post_head_projection(attended)
         processed_stream = self.mlp(stream)
