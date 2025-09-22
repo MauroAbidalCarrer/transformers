@@ -12,6 +12,7 @@ N_EMBEDING_DIMS = 384
 LEARNING_RATE = 1e-4
 N_TRAINING_STEPS = 5000
 LOGGING_INTERVAL = 500
+MLP_EXPANTION_RATIO = 4
 
 # ! wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt -O ~/input.txt
 
@@ -85,6 +86,16 @@ class MaskedAttentionHead(nn.Module):
 
         return out
 
+class MLPBlock(nn.Sequential):
+    def __init__(self, expantion_ratio: int, dropout_ratio: float):
+        n_expanded_dims = N_EMBEDING_DIMS * expantion_ratio
+        super().__init__(
+            nn.Linear(N_EMBEDING_DIMS, n_expanded_dims),
+            nn.ReLU(),
+            nn.Dropout(dropout_ratio), # Small diviation from Andrej Karpathy's repo where the dropout is at the end.
+            nn.Linear(n_expanded_dims, N_EMBEDING_DIMS),
+        )
+
 class GPT(nn.Module):
     def __init__(self):
         super().__init__()
@@ -93,6 +104,7 @@ class GPT(nn.Module):
         self.register_buffer("token_positions", torch.arange(ATTENTION_WINDOW_SIZE, device=device))
         self.attention_head = MaskedAttentionHead(1024)
         self.post_head_projection = nn.Linear(1024, N_EMBEDING_DIMS)
+        self.mlp = MLPBlock(MLP_EXPANTION_RATIO, 0.15)
         self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, vocab_len)
 
     def forward(self, tokens_idx: Tensor) -> Tensor:
@@ -100,16 +112,17 @@ class GPT(nn.Module):
         positional_embedded_tokens = self.positional_embedding(self.token_positions)
         attended = self.attention_head(value_embedded_tokens + positional_embedded_tokens)
         stream = self.post_head_projection(attended)
-        output_tokens_probabilities = self.un_embedding_layer(stream)
+        processed_stream = self.mlp(stream)
+        output_tokens_probabilities = self.un_embedding_layer(processed_stream)
         return output_tokens_probabilities
 
-    def generate(self, tokens_idx: Tensor, max_new_tokens: int):
+    def generate(self, tokens_idx: Tensor, max_new_tokens: int) -> Tensor:
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
             idx_cond = tokens_idx[:, -ATTENTION_WINDOW_SIZE:]
             # get the predictions
-            logits, loss = self(idx_cond)
+            logits = self(idx_cond)
             # focus only on the last time step
             logits = logits[:, -1, :] # becomes (B, C)
             # apply softmax to get probabilities
@@ -147,4 +160,5 @@ if __name__ == "__main__":
 
     # generate from the model
     context = torch.zeros((1, 1), dtype=torch.long, device=device)
+    
     print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
