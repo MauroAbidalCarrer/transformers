@@ -9,7 +9,7 @@ TEST_SPLIT_RATIO = 0.1
 ATTENTION_WINDOW_SIZE = 256
 BATCH_SIZE = 64
 N_EMBEDING_DIMS = 384
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-4
 N_TRAINING_STEPS = 5000
 LOGGING_INTERVAL = 500
 
@@ -45,6 +45,7 @@ def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
     return x, y
 
 def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
+    model = model.eval()
     with torch.no_grad():
         y_pred = model(x) # (batch size, window size, n embeding dims)
         y_pred = y_pred.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE, vocab_len) # (batch size * window size, n embeding dims)
@@ -134,9 +135,9 @@ if __name__ == "__main__":
             test_metrics = eval_model(model, *test_batch)
             print(f"step {iter}: val loss {train_metrics['loss']:.4f}, val accuracy {train_metrics['accuracy']:.4f}")
 
+        model = model.train()
         # sample a batch of data
         x, y_true = get_random_batch(train)
-
         # evaluate the loss
         y_pred = model(x)
         loss = F.cross_entropy(y_pred, y_true)
