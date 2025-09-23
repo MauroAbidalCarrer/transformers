@@ -47,10 +47,9 @@ test = dataset[-n_test_samples:]
 
 def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
     rand_idx = torch.randint(high=len(split) - ATTENTION_WINDOW_SIZE, size=(BATCH_SIZE, ))
-
     x = torch.stack([split[idx:idx + ATTENTION_WINDOW_SIZE] for idx in rand_idx])
     y = torch.stack([split[idx + 1:idx + ATTENTION_WINDOW_SIZE + 1] for idx in rand_idx])
-    y = F.one_hot(y, num_classes=vocab_len).float()
+    # y = F.one_hot(y, num_classes=vocab_len).float()
     x, y = x.to(device), y.to(device)
     return x, y
 
@@ -59,10 +58,10 @@ def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
     with torch.no_grad():
         y_pred = model(x) # (batch size, window size, n embeding dims)
         y_pred = y_pred.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE, vocab_len) # (batch size * window size, n embeding dims)
-        y_true = y_true.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE, vocab_len)
+        y_true = y_true.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE)
         return {
             "loss": F.cross_entropy(y_pred, y_true).cpu().item(),
-            "accuracy": (torch.argmax(y_pred, dim=1) == torch.argmax(y_true, dim=1)).float().mean().cpu().item(),
+            "accuracy": (torch.argmax(y_pred, dim=1) == y_true).float().mean().cpu().item(),
         }
 
 
@@ -201,7 +200,8 @@ if __name__ == "__main__":
         # sample a batch of data
         x, y_true = get_random_batch(train)
         # evaluate the loss
-        y_pred = model(x)
+        y_pred = model(x).reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE, vocab_len)
+        y_true = y_true.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE)
         loss = F.cross_entropy(y_pred, y_true)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
