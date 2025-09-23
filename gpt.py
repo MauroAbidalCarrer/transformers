@@ -144,6 +144,17 @@ class GPT(nn.Module):
         self.transformer_blocks = nn.Sequential(*[mk_t_block() for _ in range(n_transformer_blocks)])
         self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, vocab_len)
 
+        # better init, not covered in the original GPT video, but important, will cover in followup video
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     def forward(self, tokens_idx: Tensor) -> Tensor:
         seq_len = tokens_idx.shape[1]
         token_postions = torch.arange(seq_len, device=device)
