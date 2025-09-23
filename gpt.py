@@ -12,7 +12,8 @@ TEST_SPLIT_RATIO = 0.1
 # Model hyper parameters
 ATTENTION_WINDOW_SIZE = 256
 N_EMBEDING_DIMS = 384
-ATTENTION_EXPANSION_RATIO = 4
+N_HEADS = 6
+# ATTENTION_EXPANSION_RATIO = 4
 ATTENTION_DROPOUT = 0
 MLP_EXPANSION_RATIO = 4
 MLP_DROPOUT = 0.15
@@ -80,7 +81,6 @@ class MaskedAttentionHead(nn.Module):
         self.values_projection = nn.Linear(N_EMBEDING_DIMS, head_size, bias=False)
         self.register_buffer('mask', torch.tril(torch.ones(ATTENTION_WINDOW_SIZE, ATTENTION_WINDOW_SIZE)))
         self.dropout = nn.Dropout(dropout_ratio)
-        self.post_head_projection = nn.Linear(head_size, N_EMBEDING_DIMS)
 
     def forward(self, x: Tensor) -> Tensor:
         seq_len = x.shape[1]
@@ -94,9 +94,22 @@ class MaskedAttentionHead(nn.Module):
         attention_weights = F.softmax(attention_weights, dim=-1)
         attention_weights = self.dropout(attention_weights)
         out = attention_weights @ values
-        out = self.post_head_projection(out)
 
         return out
+
+class MultiHeadMaskedAttention(nn.Module):
+    def __init__(self, n_heads: int, dropout: float):
+        super().__init__()
+        assert (N_EMBEDING_DIMS % n_heads) == 0, "N_EMBEDING_DIMS must be dividable by n_heads"
+        head_size = N_EMBEDING_DIMS // n_heads
+        self.heads = nn.ModuleList([MaskedAttentionHead(head_size, dropout) for _ in range(n_heads)])
+        self.post_head_projection = nn.Linear(N_EMBEDING_DIMS, N_EMBEDING_DIMS)
+
+    def forward(self, x: Tensor) -> Tensor:
+        attended = [head(x) for head in self.heads]
+        attended = torch.cat(attended, dim=2)
+        attended = self.post_head_projection(attended)
+        return attended
 
 class MLPBlock(nn.Sequential):
     def __init__(self, expantion_ratio: int, dropout_ratio: float):
@@ -111,9 +124,9 @@ class MLPBlock(nn.Sequential):
         )
 
 class TransformerBlock(nn.Module):
-    def __init__(self, head_expansion: int, head_dropout: float, mlp_expansion: int, mlp_dropout: float):
+    def __init__(self, n_heads: int, head_dropout: float, mlp_expansion: int, mlp_dropout: float):
         super().__init__()
-        self.attention_head = MaskedAttentionHead(head_expansion * N_EMBEDING_DIMS, head_dropout)
+        self.attention_head = MultiHeadMaskedAttention(n_heads, head_dropout)
         self.mlp = MLPBlock(mlp_expansion, mlp_dropout)
     
     def forward(self, x: Tensor) -> Tensor:
@@ -126,9 +139,8 @@ class GPT(nn.Module):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_len, N_EMBEDING_DIMS)
         self.positional_embedding = nn.Embedding(ATTENTION_WINDOW_SIZE, N_EMBEDING_DIMS)
-        mk_transformer_block = partial(TransformerBlock, ATTENTION_EXPANSION_RATIO, ATTENTION_DROPOUT, MLP_EXPANSION_RATIO, MLP_DROPOUT)
-        self.transformer_blocks = nn.Sequential(*[mk_transformer_block() for _ in range(n_transformer_blocks)])
-
+        mk_t_block = partial(TransformerBlock, N_HEADS, ATTENTION_DROPOUT, MLP_EXPANSION_RATIO, MLP_DROPOUT)
+        self.transformer_blocks = nn.Sequential(*[mk_t_block() for _ in range(n_transformer_blocks)])
         self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, vocab_len)
 
     def forward(self, tokens_idx: Tensor) -> Tensor:
