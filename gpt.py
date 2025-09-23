@@ -6,14 +6,20 @@ from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
 
+# Data hyper parameters
 TEST_SPLIT_RATIO = 0.1
+# Model hyper parameters
 ATTENTION_WINDOW_SIZE = 256
-BATCH_SIZE = 64
 N_EMBEDING_DIMS = 384
+ATTENTION_EXPANSION_RATIO = 4
+ATTENTION_DROPOUT = 0
+MLP_EXPANSION_RATIO = 4
+MLP_DROPOUT = 0.15
+# training hyper parameters
+BATCH_SIZE = 64
 LEARNING_RATE = 1e-4
-N_TRAINING_STEPS = 0
+N_TRAINING_STEPS = 5000
 LOGGING_INTERVAL = 500
-MLP_EXPANTION_RATIO = 4
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt -O ~/input.txt
 
@@ -102,10 +108,10 @@ class MLPBlock(nn.Sequential):
         )
 
 class TransformerBlock(nn.Module):
-    def __init__(self, expansion_ratio: int, dropout_ratio: float):
+    def __init__(self, head_expansion: int, head_dropout: float, mlp_expansion: int, mlp_dropout: float):
         super().__init__()
-        self.attention_head = MaskedAttentionHead(expansion_ratio * N_EMBEDING_DIMS, 0)
-        self.mlp = MLPBlock(expansion_ratio, dropout_ratio)
+        self.attention_head = MaskedAttentionHead(head_expansion * N_EMBEDING_DIMS, head_dropout)
+        self.mlp = MLPBlock(mlp_expansion, mlp_dropout)
     
     def forward(self, x: Tensor) -> Tensor:
         attended = self.attention_head(x)
@@ -117,7 +123,7 @@ class GPT(nn.Module):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_len, N_EMBEDING_DIMS)
         self.positional_embedding = nn.Embedding(ATTENTION_WINDOW_SIZE, N_EMBEDING_DIMS)
-        mk_transformer_block = partial(TransformerBlock, 4, 0.15)
+        mk_transformer_block = partial(TransformerBlock, ATTENTION_EXPANSION_RATIO, ATTENTION_DROPOUT, MLP_EXPANSION_RATIO, MLP_DROPOUT)
         self.transformer_blocks = nn.Sequential(*[mk_transformer_block() for _ in range(n_transformer_blocks)])
 
         self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, vocab_len)
