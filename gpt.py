@@ -13,6 +13,7 @@ TEST_SPLIT_RATIO = 0.1
 ATTENTION_WINDOW_SIZE = 256
 N_EMBEDING_DIMS = 384
 N_HEADS = 6
+N_TRANSFORMER_BLOCKS = 6
 # ATTENTION_EXPANSION_RATIO = 4
 ATTENTION_DROPOUT = 0
 MLP_EXPANSION_RATIO = 4
@@ -171,7 +172,7 @@ class GPT(nn.Module):
         return tokens
 
 if __name__ == "__main__":
-    model = GPT(n_transformer_blocks=3).to(device)
+    model = GPT(n_transformer_blocks=N_TRANSFORMER_BLOCKS).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
