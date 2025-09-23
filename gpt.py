@@ -9,7 +9,7 @@ TEST_SPLIT_RATIO = 0.1
 ATTENTION_WINDOW_SIZE = 256
 BATCH_SIZE = 64
 N_EMBEDING_DIMS = 384
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 3e-4
 N_TRAINING_STEPS = 5000
 LOGGING_INTERVAL = 500
 MLP_EXPANTION_RATIO = 4
@@ -94,8 +94,8 @@ class MLPBlock(nn.Sequential):
             nn.Linear(N_EMBEDING_DIMS, n_expanded_dims),
             nn.ReLU(),
             # Small diviation from Andrej Karpathy's repo where the dropout is at the end.
-            nn.Dropout(dropout_ratio), 
             nn.Linear(n_expanded_dims, N_EMBEDING_DIMS),
+            nn.Dropout(dropout_ratio), 
         )
 
 class GPT(nn.Module):
