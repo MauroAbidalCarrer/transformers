@@ -21,7 +21,7 @@ MLP_DROPOUT = 0.15
 # training hyper parameters
 BATCH_SIZE = 64
 LEARNING_RATE = 3e-4
-N_TRAINING_STEPS = 5000
+N_TRAINING_STEPS = 2000
 LOGGING_INTERVAL = 500
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt -O ~/input.txt
