@@ -6,6 +6,7 @@ from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
 
+
 # Data hyper parameters
 TEST_SPLIT_RATIO = 0.1
 # Model hyper parameters
@@ -42,7 +43,6 @@ train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
 
-
 def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
     rand_idx = torch.randint(high=len(split) - ATTENTION_WINDOW_SIZE, size=(BATCH_SIZE, ))
 
@@ -73,6 +73,7 @@ class MaskedAttentionHead(nn.Module):
         The forward call will project the tokens back to their embeding size.
         """
         super().__init__()
+        self.layer_norm = nn.LayerNorm(N_EMBEDING_DIMS)
         self.head_size = head_size
         self.keys_projection = nn.Linear(N_EMBEDING_DIMS, head_size, bias=False)
         self.queries_projection = nn.Linear(N_EMBEDING_DIMS, head_size, bias=False)
@@ -83,6 +84,7 @@ class MaskedAttentionHead(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         seq_len = x.shape[1]
+        x = self.layer_norm(x)
         keys: Tensor = self.keys_projection(x)
         queries = self.queries_projection(x)
         values = self.values_projection(x)
@@ -100,6 +102,7 @@ class MLPBlock(nn.Sequential):
     def __init__(self, expantion_ratio: int, dropout_ratio: float):
         n_expanded_dims = N_EMBEDING_DIMS * expantion_ratio
         super().__init__(
+            nn.LayerNorm(N_EMBEDING_DIMS),
             nn.Linear(N_EMBEDING_DIMS, n_expanded_dims),
             nn.ReLU(),
             # Small diviation from Andrej Karpathy's repo where the dropout is at the end.
@@ -114,9 +117,9 @@ class TransformerBlock(nn.Module):
         self.mlp = MLPBlock(mlp_expansion, mlp_dropout)
     
     def forward(self, x: Tensor) -> Tensor:
-        attended = self.attention_head(x)
-        processed = self.mlp(attended)
-        return processed
+        x = x + self.attention_head(x)
+        x = x + self.mlp(x)
+        return x
 
 class GPT(nn.Module):
     def __init__(self, n_transformer_blocks: int=3):
@@ -156,7 +159,7 @@ class GPT(nn.Module):
         return tokens
 
 if __name__ == "__main__":
-    model = GPT(n_transformer_blocks=1).to(device)
+    model = GPT(n_transformer_blocks=3).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
