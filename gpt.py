@@ -19,7 +19,7 @@ MLP_EXPANSION_RATIO = 4
 MLP_DROPOUT = 0.15
 # training hyper parameters
 BATCH_SIZE = 64
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 3e-4
 N_TRAINING_STEPS = 5000
 LOGGING_INTERVAL = 500
 
@@ -183,7 +183,7 @@ if __name__ == "__main__":
             print(f"step {iter}: train loss {train_metrics['loss']:.4f}, train accuracy {train_metrics['accuracy']:.4f}")
             test_batch = get_random_batch(test)
             test_metrics = eval_model(model, *test_batch)
-            print(f"step {iter}: val loss {train_metrics['loss']:.4f}, val accuracy {train_metrics['accuracy']:.4f}")
+            print(f"step {iter}: val loss {test_metrics['loss']:.4f}, val accuracy {test_metrics['accuracy']:.4f}")
 
         model = model.train()
         # sample a batch of data
