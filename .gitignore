@@ -1,3 +1,4 @@
+*.pth
 input.txt
 
 # Byte-compiled / optimized / DLL files
