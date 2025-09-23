@@ -1,4 +1,5 @@
 from math import sqrt
+from functools import partial
 
 import torch
 from torch import nn
@@ -9,8 +10,8 @@ TEST_SPLIT_RATIO = 0.1
 ATTENTION_WINDOW_SIZE = 256
 BATCH_SIZE = 64
 N_EMBEDING_DIMS = 384
-LEARNING_RATE = 3e-4
-N_TRAINING_STEPS = 5000
+LEARNING_RATE = 1e-4
+N_TRAINING_STEPS = 0
 LOGGING_INTERVAL = 500
 MLP_EXPANTION_RATIO = 4
 
@@ -26,14 +27,14 @@ token_idx_to_str = dict(enumerate(vocab))
 encode = lambda string: [str_to_char_idx[char] for char in string]
 decode = lambda tokens_idx: "".join([token_idx_to_str[token_idx] for token_idx in tokens_idx])
 
-encoded_txt = encode(shakespeare_txt)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-dataset = torch.tensor(encoded_txt, dtype=torch.long)
+encoded_txt = encode(shakespeare_txt)
+dataset = torch.tensor(encoded_txt, dtype=torch.long).to(device)
 n_test_samples = int(TEST_SPLIT_RATIO * len(shakespeare_txt))
 train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
@@ -72,6 +73,7 @@ class MaskedAttentionHead(nn.Module):
         self.values_projection = nn.Linear(N_EMBEDING_DIMS, head_size, bias=False)
         self.register_buffer('mask', torch.tril(torch.ones(ATTENTION_WINDOW_SIZE, ATTENTION_WINDOW_SIZE)))
         self.dropout = nn.Dropout(dropout_ratio)
+        self.post_head_projection = nn.Linear(head_size, N_EMBEDING_DIMS)
 
     def forward(self, x: Tensor) -> Tensor:
         seq_len = x.shape[1]
@@ -84,6 +86,7 @@ class MaskedAttentionHead(nn.Module):
         attention_weights = F.softmax(attention_weights, dim=-1)
         attention_weights = self.dropout(attention_weights)
         out = attention_weights @ values
+        out = self.post_head_projection(out)
 
         return out
 
@@ -98,14 +101,25 @@ class MLPBlock(nn.Sequential):
             nn.Dropout(dropout_ratio), 
         )
 
+class TransformerBlock(nn.Module):
+    def __init__(self, expansion_ratio: int, dropout_ratio: float):
+        super().__init__()
+        self.attention_head = MaskedAttentionHead(expansion_ratio * N_EMBEDING_DIMS, 0)
+        self.mlp = MLPBlock(expansion_ratio, dropout_ratio)
+    
+    def forward(self, x: Tensor) -> Tensor:
+        attended = self.attention_head(x)
+        processed = self.mlp(attended)
+        return processed
+
 class GPT(nn.Module):
-    def __init__(self):
+    def __init__(self, n_transformer_blocks: int=3):
         super().__init__()
         self.token_embedding = nn.Embedding(vocab_len, N_EMBEDING_DIMS)
         self.positional_embedding = nn.Embedding(ATTENTION_WINDOW_SIZE, N_EMBEDING_DIMS)
-        self.attention_head = MaskedAttentionHead(1024)
-        self.post_head_projection = nn.Linear(1024, N_EMBEDING_DIMS)
-        self.mlp = MLPBlock(MLP_EXPANTION_RATIO, 0.15)
+        mk_transformer_block = partial(TransformerBlock, 4, 0.15)
+        self.transformer_blocks = nn.Sequential(*[mk_transformer_block() for _ in range(n_transformer_blocks)])
+
         self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, vocab_len)
 
     def forward(self, tokens_idx: Tensor) -> Tensor:
@@ -113,17 +127,16 @@ class GPT(nn.Module):
         token_postions = torch.arange(seq_len, device=device)
         positional_embedded_tokens = self.positional_embedding(token_postions)
         value_embedded_tokens = self.token_embedding(tokens_idx)
-        attended = self.attention_head(value_embedded_tokens + positional_embedded_tokens)
-        stream = self.post_head_projection(attended)
-        processed_stream = self.mlp(stream)
+        embedded_tokens = positional_embedded_tokens + value_embedded_tokens
+        processed_stream = self.transformer_blocks(embedded_tokens)
         output_tokens_probabilities = self.un_embedding_layer(processed_stream)
         return output_tokens_probabilities
 
-    def generate(self, tokens_idx: Tensor, max_new_tokens: int) -> Tensor:
+    def generate(self, tokens: Tensor, max_new_tokens: int) -> Tensor:
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
-            idx_cond = tokens_idx[:, -ATTENTION_WINDOW_SIZE:]
+            idx_cond = tokens[:, -ATTENTION_WINDOW_SIZE:]
             # get the predictions
             logits = self(idx_cond)
             # focus only on the last time step
@@ -133,11 +146,11 @@ class GPT(nn.Module):
             # sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             # append sampled index to the running sequence
-            tokens_idx = torch.cat((tokens_idx, idx_next), dim=1) # (B, T+1)
-        return tokens_idx
+            tokens = torch.cat((tokens, idx_next), dim=1) # (B, T+1)
+        return tokens
 
 if __name__ == "__main__":
-    model = GPT().to(device)
+    model = GPT(n_transformer_blocks=1).to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
