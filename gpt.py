@@ -9,12 +9,12 @@ TEST_SPLIT_RATIO = 0.1
 ATTENTION_WINDOW_SIZE = 256
 BATCH_SIZE = 64
 N_EMBEDING_DIMS = 384
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 1e-4
 N_TRAINING_STEPS = 5000
 LOGGING_INTERVAL = 500
 MLP_EXPANTION_RATIO = 4
 
-# ! wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt -O ~/input.txt
+# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt -O ~/input.txt
 
 with open("/root/input.txt", 'r', encoding='utf-8') as f:
     shakespeare_txt = f.read()
@@ -30,8 +30,8 @@ encoded_txt = encode(shakespeare_txt)
 
 dataset = torch.tensor(encoded_txt, dtype=torch.long)
 n_test_samples = int(TEST_SPLIT_RATIO * len(shakespeare_txt))
-train = dataset[:n_test_samples]
-test = dataset[n_test_samples:]
+train = dataset[:-n_test_samples]
+test = dataset[-n_test_samples:]
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -161,6 +161,8 @@ if __name__ == "__main__":
         loss.backward()
         optimizer.step()
 
+    model_state = model.state_dict()
+    torch.save(model_state, "latest_model_params.pth")
     # generate from the model
     context = torch.zeros((1, 1), dtype=torch.long, device=device)
     
