@@ -1,0 +1,28 @@
+name: transformers
+channels:
+  - nvidia
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11.5
+  - rich==13.9.4
+  - pytorch==2.5.1 
+  - python-kaleido==0.2.1
+  - torchvision==0.20.1
+  - plotly==6.2.0
+  - pandas==2.2.3
+  - pyarrow==19.0.0
+  - matplotlib==3.10.3
+  - ipykernel==6.29.5
+  - ipywidgets==8.1.5
+  - nbformat==5.10.4
+  - numpy=2.3.0
+  - scikit-learn==1.6.1
+  - scipy==1.15.3
+  - optuna==4.4.0  
+  - pip
+  - pip:
+    # install kagglehub through pip to get the lateset version.
+    - kagglehub==0.3.13
+    # - -e .
