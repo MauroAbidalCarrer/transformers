@@ -21,6 +21,7 @@ dependencies:
   - scikit-learn==1.6.1
   - scipy==1.15.3
   - optuna==4.4.0  
+  - tiktoken==0.11.0
   - pip
   - pip:
     # install kagglehub through pip to get the lateset version.
