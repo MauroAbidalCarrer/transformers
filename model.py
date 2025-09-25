@@ -20,17 +20,17 @@ class MaskedAttentionHead(nn.Module):
         super().__init__()
         self.layer_norm = nn.LayerNorm(config.n_embed_dim)
         self.head_size = config.n_embed_dim // config.n_heads
-        self.keys_projection = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
-        self.queries_projection = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
-        self.values_projection = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
+        self.keys_weights = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
+        self.queries_weights = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
+        self.values_weights = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
         self.register_buffer('mask', torch.tril(torch.ones(config.attention_window_size, config.attention_window_size)))
 
     def forward(self, x: Tensor) -> Tensor:
         seq_len = x.shape[1]
         x = self.layer_norm(x)
-        keys: Tensor = self.keys_projection(x)
-        queries = self.queries_projection(x)
-        values = self.values_projection(x)
+        keys: Tensor = self.keys_weights(x)
+        queries = self.queries_weights(x)
+        values = self.values_weights(x)
         attention_weights = queries @ keys.swapaxes(1, 2)
         attention_weights /= sqrt(self.head_size)
         attention_weights = torch.masked_fill(attention_weights, self.mask[:seq_len, :seq_len] == 0, float('-inf'))
@@ -43,9 +43,9 @@ class MultiHeadMaskedAttention(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         assert (config.n_embed_dim % config.n_heads) == 0, "config.n_embed_dim must be dividable by n_heads"
-        head_size = config.n_embed_dim // config.n_heads
         self.heads = nn.ModuleList([MaskedAttentionHead(config) for _ in range(config.n_heads)])
         self.post_head_projection = nn.Linear(config.n_embed_dim, config.n_embed_dim)
+        self.post_head_projection.is_proj_layer = True
 
     def forward(self, x: Tensor) -> Tensor:
         attended = [head(x) for head in self.heads]
@@ -56,11 +56,13 @@ class MultiHeadMaskedAttention(nn.Module):
 class MLPBlock(nn.Sequential):
     def __init__(self, config: GPTConfig):
         n_expanded_dims = config.n_embed_dim * 4
+        proj_layer = nn.Linear(n_expanded_dims, config.n_embed_dim)
+        proj_layer.is_proj_layer = True
         super().__init__(
             nn.LayerNorm(config.n_embed_dim),
             nn.Linear(config.n_embed_dim, n_expanded_dims),
             nn.GELU(),
-            nn.Linear(n_expanded_dims, config.n_embed_dim),
+            proj_layer,
         )
 
 class TransformerBlock(nn.Module):
@@ -88,11 +90,16 @@ class GPT(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            std = 0.02
+            # If the layer is layer that projects the back into the residual stream
+            if getattr(module, 'is_proj_layer', False):
+                std *= (2 * self.config.n_transformer_blocks) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
 
     def forward(self, tokens_idx: Tensor) -> Tensor:
         seq_len = tokens_idx.shape[1]
