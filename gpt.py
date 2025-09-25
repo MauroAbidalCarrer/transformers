@@ -12,29 +12,17 @@ from torch.nn import functional as F
 
 # Data hyper parameters
 TEST_SPLIT_RATIO = 0.1
-# Model hyper parameters
-# config.attention_window_size = 256
-# config.n_embed_dim = 384
-# N_HEADS = 6
-# N_TRANSFORMER_BLOCKS = 6
-# ATTENTION_DROPOUT = 0
-# MLP_EXPANSION_RATIO = 4
-# MLP_DROPOUT = 0.15
-# training hyper parameters
-BATCH_SIZE = 8
+BATCH_SIZE = 1
 LEARNING_RATE = 3e-4
 N_TRAINING_STEPS = 2000
 LOGGING_INTERVAL = 500
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open("input.txt", 'r', encoding='utf-8') as f:
     shakespeare_txt = f.read()
-
 tokenizer = tiktoken.get_encoding("gpt2")
-# config.vocab_size = tokenizer.max_token_value + 1
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
 encoded_txt = tokenizer.encode(shakespeare_txt)
 dataset = torch.tensor(encoded_txt, dtype=torch.long) #.to(device)
 n_test_samples = int(TEST_SPLIT_RATIO * len(shakespeare_txt))
@@ -77,7 +65,7 @@ class MaskedAttentionHead(nn.Module):
         """
         super().__init__()
         self.layer_norm = nn.LayerNorm(config.n_embed_dim)
-        self.head_size = config.n_embed_dim * 4
+        self.head_size = config.n_embed_dim // config.n_heads
         self.keys_projection = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
         self.queries_projection = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
         self.values_projection = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
@@ -196,8 +184,8 @@ if __name__ == "__main__":
                 model = model.eval()
                 train_batch = get_random_batch(train, config)
                 train_metrics = eval_model(model, *train_batch, config)
-                test_batch = get_random_batch(test)
-                test_metrics = eval_model(model, *test_batch)
+                test_batch = get_random_batch(test, config)
+                test_metrics = eval_model(model, *test_batch, config)
                 # print(f"step {step}: val loss , val accuracy {test_metrics['accuracy']:.4f}")
                 logging_format = "step: {step:4d} | train loss: {train_loss:5.3f} | val loss: {test_loss:5.3f} | dt: {dt:5.0f}ms | tokens/s: {tokens_per_sec:5.0f}"
                 print(logging_format.format(
@@ -212,7 +200,7 @@ if __name__ == "__main__":
 
         model = model.train()
         # sample a batch of data
-        x, y_true = get_random_batch(train)
+        x, y_true = get_random_batch(train, config)
         # evaluate the loss
         y_pred = model(x).reshape(BATCH_SIZE * config.attention_window_size, config.vocab_size)
         y_true = y_true.reshape(BATCH_SIZE * config.attention_window_size)
