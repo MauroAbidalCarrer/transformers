@@ -20,12 +20,12 @@ ATTENTION_DROPOUT = 0
 MLP_EXPANSION_RATIO = 4
 MLP_DROPOUT = 0.15
 # training hyper parameters
-BATCH_SIZE = 64
+BATCH_SIZE = 8
 LEARNING_RATE = 3e-4
-N_TRAINING_STEPS = 2
+N_TRAINING_STEPS = 50
 LOGGING_INTERVAL = 500
 
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt -O ~/input.txt
+# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open("input.txt", 'r', encoding='utf-8') as f:
     shakespeare_txt = f.read()
 
@@ -42,7 +42,7 @@ vocab_len = tokenizer.max_token_value + 1
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 encoded_txt = tokenizer.encode(shakespeare_txt)
-dataset = torch.tensor(encoded_txt, dtype=torch.long).to(device)
+dataset = torch.tensor(encoded_txt, dtype=torch.long) #.to(device)
 n_test_samples = int(TEST_SPLIT_RATIO * len(shakespeare_txt))
 train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
@@ -129,7 +129,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.attention_head = MultiHeadMaskedAttention(n_heads, head_dropout)
         self.mlp = MLPBlock(mlp_expansion, mlp_dropout)
-    
+
     def forward(self, x: Tensor) -> Tensor:
         x = x + self.attention_head(x)
         x = x + self.mlp(x)
@@ -179,18 +179,26 @@ class GPT(nn.Module):
 
 if __name__ == "__main__":
     model = GPT(n_transformer_blocks=N_TRANSFORMER_BLOCKS).to(device)
+    param_size = 0
+    for param in model.parameters():
+        param_size += param.nelement() * param.element_size()
+    size_all_mb = param_size / 1024**2
+    print('model size: {:.3f}MB'.format(size_all_mb))
+
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
     for iter in range(N_TRAINING_STEPS):
 
         if iter % LOGGING_INTERVAL == 0 or iter == N_TRAINING_STEPS - 1:
-            train_batch = get_random_batch(train)
-            train_metrics = eval_model(model, *train_batch)
-            print(f"step {iter}: train loss {train_metrics['loss']:.4f}, train accuracy {train_metrics['accuracy']:.4f}")
-            test_batch = get_random_batch(test)
-            test_metrics = eval_model(model, *test_batch)
-            print(f"step {iter}: val loss {test_metrics['loss']:.4f}, val accuracy {test_metrics['accuracy']:.4f}")
+            with torch.no_grad():
+                model = model.eval()
+                train_batch = get_random_batch(train)
+                train_metrics = eval_model(model, *train_batch)
+                print(f"step {iter}: train loss {train_metrics['loss']:.4f}, train accuracy {train_metrics['accuracy']:.4f}")
+                test_batch = get_random_batch(test)
+                test_metrics = eval_model(model, *test_batch)
+                print(f"step {iter}: val loss {test_metrics['loss']:.4f}, val accuracy {test_metrics['accuracy']:.4f}")
 
         model = model.train()
         # sample a batch of data
