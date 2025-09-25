@@ -1,5 +1,9 @@
-1. use tiktoken.
-1. use a proper TensorDataset and Dataloader.
+<!-- 1. use tiktoken. -->
+<!-- 1. use a proper TensorDataset and Dataloader. -->
+1. Use config instead of huge method declarations.
+1. Use GeLU.
+1. Use better initialization
+1. Tie embedding and unembedding layers wieghts.
 1. use flash attention.
 1. use bfloat with amp.
 1. set the weights to TFloat32?.
