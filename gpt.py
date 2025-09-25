@@ -1,3 +1,4 @@
+from time import time
 from math import sqrt
 from functools import partial
 
@@ -22,7 +23,7 @@ MLP_DROPOUT = 0.15
 # training hyper parameters
 BATCH_SIZE = 8
 LEARNING_RATE = 3e-4
-N_TRAINING_STEPS = 50
+N_TRAINING_STEPS = 2000
 LOGGING_INTERVAL = 500
 
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
@@ -30,7 +31,7 @@ with open("input.txt", 'r', encoding='utf-8') as f:
     shakespeare_txt = f.read()
 
 tokenizer = tiktoken.get_encoding("gpt2")
-vocab_len = tokenizer.max_token_value + 1
+VOCAB_LEN = tokenizer.max_token_value + 1
 
 # vocab = sorted(list(set(shakespeare_txt)))
 # vocab_len = len(vocab)
@@ -59,7 +60,7 @@ def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
     model = model.eval()
     with torch.no_grad():
         y_pred = model(x) # (batch size, window size, n embeding dims)
-        y_pred = y_pred.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE, vocab_len) # (batch size * window size, n embeding dims)
+        y_pred = y_pred.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE, VOCAB_LEN) # (batch size * window size, n embeding dims)
         y_true = y_true.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE)
         return {
             "loss": F.cross_entropy(y_pred, y_true).cpu().item(),
@@ -138,11 +139,11 @@ class TransformerBlock(nn.Module):
 class GPT(nn.Module):
     def __init__(self, n_transformer_blocks: int=3):
         super().__init__()
-        self.token_embedding = nn.Embedding(vocab_len, N_EMBEDING_DIMS)
+        self.token_embedding = nn.Embedding(VOCAB_LEN, N_EMBEDING_DIMS)
         self.positional_embedding = nn.Embedding(ATTENTION_WINDOW_SIZE, N_EMBEDING_DIMS)
         mk_t_block = partial(TransformerBlock, N_HEADS, ATTENTION_DROPOUT, MLP_EXPANSION_RATIO, MLP_DROPOUT)
         self.transformer_blocks = nn.Sequential(*[mk_t_block() for _ in range(n_transformer_blocks)])
-        self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, vocab_len)
+        self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, VOCAB_LEN)
 
         self.apply(self._init_weights)
 
@@ -187,24 +188,36 @@ if __name__ == "__main__":
 
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-
-    for iter in range(N_TRAINING_STEPS):
-
-        if iter % LOGGING_INTERVAL == 0 or iter == N_TRAINING_STEPS - 1:
+    
+    last_log_step = 0
+    last_log_iter_start = time()
+    for step in range(N_TRAINING_STEPS):
+        if step % LOGGING_INTERVAL == 0 or step == N_TRAINING_STEPS - 1:
+            n_processed_tokens = (step - last_log_step) * BATCH_SIZE * ATTENTION_WINDOW_SIZE
+            time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
             with torch.no_grad():
                 model = model.eval()
                 train_batch = get_random_batch(train)
                 train_metrics = eval_model(model, *train_batch)
-                print(f"step {iter}: train loss {train_metrics['loss']:.4f}, train accuracy {train_metrics['accuracy']:.4f}")
                 test_batch = get_random_batch(test)
                 test_metrics = eval_model(model, *test_batch)
-                print(f"step {iter}: val loss {test_metrics['loss']:.4f}, val accuracy {test_metrics['accuracy']:.4f}")
+                # print(f"step {step}: val loss , val accuracy {test_metrics['accuracy']:.4f}")
+                logging_format = "step: {step:4d} | train loss: {train_loss:5.3f} | val loss: {test_loss:5.3f} | dt: {dt:5.0f}ms | tokens/s: {tokens_per_sec:5.0f}"
+                print(logging_format.format(
+                    step=step,
+                    train_loss=train_metrics["loss"],
+                    test_loss=test_metrics["loss"],
+                    dt=time_to_last_log_step_ms,
+                    tokens_per_sec=n_processed_tokens / time_to_last_log_step_ms
+                ))
+                last_log_step = step
+                last_log_iter_start = time()
 
         model = model.train()
         # sample a batch of data
         x, y_true = get_random_batch(train)
         # evaluate the loss
-        y_pred = model(x).reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE, vocab_len)
+        y_pred = model(x).reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE, VOCAB_LEN)
         y_true = y_true.reshape(BATCH_SIZE * ATTENTION_WINDOW_SIZE)
         loss = F.cross_entropy(y_pred, y_true)
         optimizer.zero_grad(set_to_none=True)
