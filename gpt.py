@@ -44,7 +44,7 @@ test = dataset[-n_test_samples:]
 @dataclass
 class GPTConfig:
     attention_window_size: int = 1024 
-    vocab_size: int = 50257 
+    vocab_size: int = tokenizer.max_token_value + 1
     n_transformer_blocks: int = 12 
     n_heads: int = 12 
     n_embed_dim: int = 768 
@@ -93,7 +93,6 @@ class MaskedAttentionHead(nn.Module):
         attention_weights /= sqrt(self.head_size)
         attention_weights = torch.masked_fill(attention_weights, self.mask[:seq_len, :seq_len] == 0, float('-inf'))
         attention_weights = F.softmax(attention_weights, dim=-1)
-        attention_weights = self.dropout(attention_weights)
         out = attention_weights @ values
 
         return out
@@ -177,8 +176,8 @@ class GPT(nn.Module):
         return tokens
 
 if __name__ == "__main__":
-    model_config = GPTConfig()
-    model = GPT(model_config).to(device)
+    config = GPTConfig()
+    model = GPT(config).to(device)
     param_size = 0
     for param in model.parameters():
         param_size += param.nelement() * param.element_size()
@@ -195,8 +194,8 @@ if __name__ == "__main__":
             time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
             with torch.no_grad():
                 model = model.eval()
-                train_batch = get_random_batch(train)
-                train_metrics = eval_model(model, *train_batch)
+                train_batch = get_random_batch(train, config)
+                train_metrics = eval_model(model, *train_batch, config)
                 test_batch = get_random_batch(test)
                 test_metrics = eval_model(model, *test_batch)
                 # print(f"step {step}: val loss , val accuracy {test_metrics['accuracy']:.4f}")
