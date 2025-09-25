@@ -59,7 +59,7 @@ class MLPBlock(nn.Sequential):
         super().__init__(
             nn.LayerNorm(config.n_embed_dim),
             nn.Linear(config.n_embed_dim, n_expanded_dims),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(n_expanded_dims, config.n_embed_dim),
         )
 
