@@ -2,6 +2,7 @@ from math import sqrt
 from functools import partial
 
 import torch
+import tiktoken
 from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
@@ -19,27 +20,29 @@ ATTENTION_DROPOUT = 0
 MLP_EXPANSION_RATIO = 4
 MLP_DROPOUT = 0.15
 # training hyper parameters
-BATCH_SIZE = 64
+BATCH_SIZE = 8
 LEARNING_RATE = 3e-4
-N_TRAINING_STEPS = 2000
+N_TRAINING_STEPS = 50
 LOGGING_INTERVAL = 500
 
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt -O ~/input.txt
-
-with open("/root/input.txt", 'r', encoding='utf-8') as f:
+# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+with open("input.txt", 'r', encoding='utf-8') as f:
     shakespeare_txt = f.read()
 
-vocab = sorted(list(set(shakespeare_txt)))
-vocab_len = len(vocab)
-str_to_char_idx = { ch:i for i,ch in enumerate(vocab) }
-token_idx_to_str = dict(enumerate(vocab))
-encode = lambda string: [str_to_char_idx[char] for char in string]
-decode = lambda tokens_idx: "".join([token_idx_to_str[token_idx] for token_idx in tokens_idx])
+tokenizer = tiktoken.get_encoding("gpt2")
+vocab_len = tokenizer.max_token_value + 1
+
+# vocab = sorted(list(set(shakespeare_txt)))
+# vocab_len = len(vocab)
+# str_to_char_idx = { ch:i for i,ch in enumerate(vocab) }
+# token_idx_to_str = dict(enumerate(vocab))
+# encode = lambda string: [str_to_char_idx[char] for char in string]
+# decode = lambda tokens_idx: "".join([token_idx_to_str[token_idx] for token_idx in tokens_idx])
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-encoded_txt = encode(shakespeare_txt)
-dataset = torch.tensor(encoded_txt, dtype=torch.long).to(device)
+encoded_txt = tokenizer.encode(shakespeare_txt)
+dataset = torch.tensor(encoded_txt, dtype=torch.long) #.to(device)
 n_test_samples = int(TEST_SPLIT_RATIO * len(shakespeare_txt))
 train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
@@ -49,7 +52,6 @@ def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
     rand_idx = torch.randint(high=len(split) - ATTENTION_WINDOW_SIZE, size=(BATCH_SIZE, ))
     x = torch.stack([split[idx:idx + ATTENTION_WINDOW_SIZE] for idx in rand_idx])
     y = torch.stack([split[idx + 1:idx + ATTENTION_WINDOW_SIZE + 1] for idx in rand_idx])
-    # y = F.one_hot(y, num_classes=vocab_len).float()
     x, y = x.to(device), y.to(device)
     return x, y
 
@@ -118,7 +120,6 @@ class MLPBlock(nn.Sequential):
             nn.LayerNorm(N_EMBEDING_DIMS),
             nn.Linear(N_EMBEDING_DIMS, n_expanded_dims),
             nn.ReLU(),
-            # Small diviation from Andrej Karpathy's repo where the dropout is at the end.
             nn.Linear(n_expanded_dims, N_EMBEDING_DIMS),
             nn.Dropout(dropout_ratio), 
         )
@@ -128,7 +129,7 @@ class TransformerBlock(nn.Module):
         super().__init__()
         self.attention_head = MultiHeadMaskedAttention(n_heads, head_dropout)
         self.mlp = MLPBlock(mlp_expansion, mlp_dropout)
-    
+
     def forward(self, x: Tensor) -> Tensor:
         x = x + self.attention_head(x)
         x = x + self.mlp(x)
@@ -143,7 +144,6 @@ class GPT(nn.Module):
         self.transformer_blocks = nn.Sequential(*[mk_t_block() for _ in range(n_transformer_blocks)])
         self.un_embedding_layer = nn.Linear(N_EMBEDING_DIMS, vocab_len)
 
-        # better init, not covered in the original GPT video, but important, will cover in followup video
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -169,32 +169,36 @@ class GPT(nn.Module):
         for _ in range(max_new_tokens):
             # crop idx to the last block_size tokens
             idx_cond = tokens[:, -ATTENTION_WINDOW_SIZE:]
-            # get the predictions
             logits = self(idx_cond)
-            # focus only on the last time step
-            logits = logits[:, -1, :] # becomes (B, C)
-            # apply softmax to get probabilities
+            # only get the next prediction of the last token, i.e the pred for the next token (B, C)
+            logits = logits[:, -1, :]
             probs = F.softmax(logits, dim=-1) # (B, C)
-            # sample from the distribution
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-            # append sampled index to the running sequence
             tokens = torch.cat((tokens, idx_next), dim=1) # (B, T+1)
         return tokens
 
 if __name__ == "__main__":
     model = GPT(n_transformer_blocks=N_TRANSFORMER_BLOCKS).to(device)
+    param_size = 0
+    for param in model.parameters():
+        param_size += param.nelement() * param.element_size()
+    size_all_mb = param_size / 1024**2
+    print('model size: {:.3f}MB'.format(size_all_mb))
+
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 
     for iter in range(N_TRAINING_STEPS):
 
         if iter % LOGGING_INTERVAL == 0 or iter == N_TRAINING_STEPS - 1:
-            train_batch = get_random_batch(train)
-            train_metrics = eval_model(model, *train_batch)
-            print(f"step {iter}: train loss {train_metrics['loss']:.4f}, train accuracy {train_metrics['accuracy']:.4f}")
-            test_batch = get_random_batch(test)
-            test_metrics = eval_model(model, *test_batch)
-            print(f"step {iter}: val loss {test_metrics['loss']:.4f}, val accuracy {test_metrics['accuracy']:.4f}")
+            with torch.no_grad():
+                model = model.eval()
+                train_batch = get_random_batch(train)
+                train_metrics = eval_model(model, *train_batch)
+                print(f"step {iter}: train loss {train_metrics['loss']:.4f}, train accuracy {train_metrics['accuracy']:.4f}")
+                test_batch = get_random_batch(test)
+                test_metrics = eval_model(model, *test_batch)
+                print(f"step {iter}: val loss {test_metrics['loss']:.4f}, val accuracy {test_metrics['accuracy']:.4f}")
 
         model = model.train()
         # sample a batch of data
@@ -212,4 +216,4 @@ if __name__ == "__main__":
     # generate from the model
     context = torch.zeros((1, 1), dtype=torch.long, device=device)
     
-    print(decode(model.generate(context, max_new_tokens=500)[0].tolist()))
+    print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
