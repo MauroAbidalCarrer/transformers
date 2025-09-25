@@ -1,0 +1,4 @@
+- use tiktoken
+- use flash attention
+- use bfloat with amp
+- set the weights to TFloat32?
