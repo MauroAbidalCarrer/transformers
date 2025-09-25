@@ -3,10 +3,10 @@
 <!-- 1. Use config instead of huge method declarations. -->
 <!-- 1. Use GeLU. -->
 <!-- 1. Use better initialization -->
-1. Tie embedding and unembedding layers wieghts.
+<!-- 1. Tie embedding and unembedding layers weights. -->
 1. use flash attention.
 1. use bfloat with amp.
-1. set the weights to TFloat32?.
+1. set the weights to TFloat32 or bfloat16?.
 1. increase the size of the model.
 1. Use torch.compile.
 1. Use gradient accumulation and increase batch size.

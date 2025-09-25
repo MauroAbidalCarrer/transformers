@@ -84,8 +84,8 @@ class GPT(nn.Module):
         self.positional_embedding = nn.Embedding(config.attention_window_size, config.n_embed_dim)
         mk_t_block = partial(TransformerBlock, config)
         self.transformer_blocks = nn.Sequential(*[mk_t_block() for _ in range(config.n_transformer_blocks)])
-        self.un_embedding_layer = nn.Linear(config.n_embed_dim, config.vocab_size)
-        # self.un_embedding_layer = self.token_embedding
+        self.un_embedding_layer = nn.Linear(config.n_embed_dim, config.vocab_size, bias=False)
+        self.un_embedding_layer.weight = self.token_embedding.weight
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
