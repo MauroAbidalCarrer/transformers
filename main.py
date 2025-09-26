@@ -1,27 +1,38 @@
 from time import time
 
 import torch
+import tiktoken
 from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
 
-from config import *
-from model import GPTConfig, GPT
+from model import GPT
+from config import (
+    GPTConfig,
+    TrainingConfig,
+    OptimizerConfig,
+    ENCODING_NAME,
+    device,
+)
+
+model_conf = GPTConfig()
+train_conf = TrainingConfig(model_conf)
+optim_conf = OptimizerConfig()
 
 
-def get_random_batch(split: Tensor, config: GPTConfig) -> tuple[Tensor, Tensor]:
-    rand_idx = torch.randint(high=len(split) - config.attention_window_size, size=(BATCH_SIZE, ))
-    x = torch.stack([split[idx:idx + config.attention_window_size] for idx in rand_idx])
-    y = torch.stack([split[idx + 1:idx + config.attention_window_size + 1] for idx in rand_idx])
+def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
+    rand_idx = torch.randint(high=len(split) - model_conf.attention_window_size, size=(train_conf.micro_batch_size, ))
+    x = torch.stack([split[idx:idx + model_conf.attention_window_size] for idx in rand_idx])
+    y = torch.stack([split[idx + 1:idx + model_conf.attention_window_size + 1] for idx in rand_idx])
     x, y = x.to(device), y.to(device)
     return x, y
 
-def eval_model(model: nn.Module, x: Tensor, y_true: Tensor, config: GPTConfig, device: torch.device) -> dict[str, float]:
+def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
     model = model.eval()
     with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
         y_pred = model(x) # (batch size, window size, n embeding dims)
-        y_pred = y_pred.reshape(BATCH_SIZE * config.attention_window_size, config.vocab_size) # (batch size * window size, n embeding dims)
-        y_true = y_true.reshape(BATCH_SIZE * config.attention_window_size)
+        y_pred = y_pred.reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size) # (batch size * window size, n embeding dims)
+        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
         return {
             "loss": F.cross_entropy(y_pred, y_true).cpu().item(),
             "accuracy": (torch.argmax(y_pred, dim=1) == y_true).float().mean().cpu().item(),
@@ -33,32 +44,34 @@ with open("input.txt", 'r', encoding='utf-8') as f:
 tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 encoded_txt = tokenizer.encode(shakespeare_txt)
 dataset = torch.tensor(encoded_txt, dtype=torch.long)
-n_test_samples = int(TEST_SPLIT_RATIO * len(shakespeare_txt))
+n_test_samples = int(train_conf.train_test_split_ratio * len(shakespeare_txt))
 train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
-config = GPTConfig()
-model = torch.compile(GPT(config).to(device))
-param_size = 0
+model = torch.compile(GPT(model_conf).to(device))
+parmaters_count = 0
+model_memory_usage = 0
 for param in model.parameters():
-    param_size += param.nelement() * param.element_size()
-size_all_mb = param_size / 1024 ** 2
-print('model size: {:.3f}MB'.format(size_all_mb))
+    model_memory_usage += param.nelement() * param.element_size()
+    parmaters_count += param.nelement()
+parmaters_count /= 1e6
+model_memory_usage /= 1024 ** 2
+print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.3f}")
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+optimizer = torch.optim.AdamW(model.parameters(), lr=optim_conf.learning_rate)
 
 last_log_step = 0
 last_log_iter_start = time()
-for step in range(N_TRAINING_STEPS):
-    if step % LOGGING_INTERVAL == 0 or step == N_TRAINING_STEPS - 1:
-        n_processed_tokens = (step - last_log_step) * BATCH_SIZE * config.attention_window_size
+for step in range(train_conf.n_training_steps):
+    if step % train_conf.log_interval == 0 or step == train_conf.n_training_steps - 1:
+        n_processed_tokens = (step - last_log_step) * train_conf.micro_batch_size * model_conf.attention_window_size
         time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
         with torch.no_grad():
             model = model.eval()
-            train_batch = get_random_batch(train, config)
-            train_metrics = eval_model(model, *train_batch, config, device)
-            test_batch = get_random_batch(test, config)
-            test_metrics = eval_model(model, *test_batch, config, device)
+            train_batch = get_random_batch(train)
+            train_metrics = eval_model(model, *train_batch)
+            test_batch = get_random_batch(test)
+            test_metrics = eval_model(model, *test_batch)
             logging_format = "step: {step:4d} | train loss: {train_loss:5.3f} | val loss: {test_loss:5.3f} | dt: {dt:5.0f}ms | tokens/s: {tokens_per_sec:5.0f}"
             print(
                 logging_format.format(
@@ -74,11 +87,11 @@ for step in range(N_TRAINING_STEPS):
 
     model = model.train()
     # sample a batch of data
-    x, y_true = get_random_batch(train, config)
-    y_true = y_true.reshape(BATCH_SIZE * config.attention_window_size)
+    x, y_true = get_random_batch(train)
+    y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
     # evaluate the loss
     with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-        y_pred = model(x).reshape(BATCH_SIZE * config.attention_window_size, config.vocab_size)
+        y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
         loss = F.cross_entropy(y_pred, y_true)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
