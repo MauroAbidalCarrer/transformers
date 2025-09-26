@@ -11,7 +11,7 @@ LEARNING_RATE = 3e-4
 N_TRAINING_STEPS = 600
 LOGGING_INTERVAL = 500
 ENCODING_NAME = "gpt2"
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 @dataclass
 class GPTConfig:
