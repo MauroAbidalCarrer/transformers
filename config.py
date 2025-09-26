@@ -6,12 +6,12 @@ import tiktoken
 
 # Data hyper parameters
 TEST_SPLIT_RATIO = 0.1
-BATCH_SIZE = 1
+BATCH_SIZE = 3
 LEARNING_RATE = 3e-4
 N_TRAINING_STEPS = 600
 LOGGING_INTERVAL = 500
 ENCODING_NAME = "gpt2"
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 @dataclass
 class GPTConfig:
