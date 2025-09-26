@@ -4,10 +4,9 @@
 <!-- 1. Use GeLU. -->
 <!-- 1. Use better initialization -->
 <!-- 1. Tie embedding and unembedding layers weights. -->
-1. use flash attention.
-1. use bfloat with amp.
-1. set the weights to TFloat32 or bfloat16?.
-1. increase the size of the model.
+<!-- 1. use flash attention. -->
+<!-- 1. set the weights to TFloat32 or bfloat16?. -->
+1. use bfloat with amp and "high" precision for float32 matmul.
 1. Use torch.compile.
 1. Use gradient accumulation and increase batch size.
 1. Use a learning rate scheduler.
