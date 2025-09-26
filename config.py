@@ -27,7 +27,7 @@ class TrainingConfig:
     n_training_steps = 1500
     train_test_split_ratio = 0.1
     log_interval = 500
-    
+
     def __init__(self, model_config: GPTConfig):
         assert self.tokens_per_batch % self.tokens_per_batch == 0, "sequences per batch should be dividable by tokens per batch"
         self.seq_len = model_config.attention_window_size

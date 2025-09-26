@@ -1,3 +1,4 @@
+from tqdm import tqdm
 from time import time
 
 import torch
@@ -56,7 +57,7 @@ for param in model.parameters():
     parmaters_count += param.nelement()
 parmaters_count /= 1e6
 model_memory_usage /= 1024 ** 2
-print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.3f}")
+print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.3f}MB")
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=optim_conf.learning_rate)
 
@@ -64,7 +65,7 @@ last_log_step = 0
 last_log_iter_start = time()
 for step in range(train_conf.n_training_steps):
     if step % train_conf.log_interval == 0 or step == train_conf.n_training_steps - 1:
-        n_processed_tokens = (step - last_log_step) * train_conf.micro_batch_size * model_conf.attention_window_size
+        n_processed_tokens = (step - last_log_step) * train_conf.micro_batch_size * model_conf.attention_window_size * train_conf.grad_accum_step
         time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
         with torch.no_grad():
             model = model.eval()
@@ -86,15 +87,16 @@ for step in range(train_conf.n_training_steps):
             last_log_iter_start = time()
 
     model = model.train()
-    # sample a batch of data
-    x, y_true = get_random_batch(train)
-    y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
-    # evaluate the loss
-    with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-        y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
-        loss = F.cross_entropy(y_pred, y_true)
     optimizer.zero_grad(set_to_none=True)
-    loss.backward()
+    for micro_step in tqdm(range(train_conf.grad_accum_step)):
+        # sample a batch of data
+        x, y_true = get_random_batch(train)
+        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
+        # evaluate the loss
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
+            loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
+            loss.backward()
     optimizer.step()
 
 model_state = model.state_dict()

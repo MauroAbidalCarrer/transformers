@@ -9,6 +9,7 @@
 <!-- 1. use bfloat with amp and "high" precision for float32 matmul. -->
 <!-- 1. Use torch.compile. -->
 1. Use gradient accumulation and increase batch size.
+1. Use gradient clipping.
 1. Use a learning rate scheduler.
 1. Better handling of optimizer hyperparameters.
 1. Use DDP.
