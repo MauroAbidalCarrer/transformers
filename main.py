@@ -66,7 +66,7 @@ for step in range(N_TRAINING_STEPS):
                     train_loss=train_metrics["loss"],
                     test_loss=test_metrics["loss"],
                     dt=time_to_last_log_step_ms,
-                    tokens_per_sec=n_processed_tokens / time_to_last_log_step_ms
+                    tokens_per_sec= 1000 * n_processed_tokens / time_to_last_log_step_ms
                 )
             )
             last_log_step = step
