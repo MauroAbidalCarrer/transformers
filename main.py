@@ -38,7 +38,7 @@ train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
 config = GPTConfig()
-model = GPT(config).to(device)
+model = torch.compile(GPT(config).to(device))
 param_size = 0
 for param in model.parameters():
     param_size += param.nelement() * param.element_size()
