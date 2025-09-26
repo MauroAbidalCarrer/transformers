@@ -1,4 +1,3 @@
-from math import sqrt
 from functools import partial
 
 import torch
@@ -6,52 +5,32 @@ from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
 
-
 from config import GPTConfig, device
 
-class MaskedAttentionHead(nn.Module):
-    def __init__(self, config: GPTConfig):
-        """
-        ### Args:
-        head_size: number of dimensions for key, query and values vectors.
-
-        The forward call will project the tokens back to their embeding size.
-        """
-        super().__init__()
-        self.layer_norm = nn.LayerNorm(config.n_embed_dim)
-        self.head_size = config.n_embed_dim // config.n_heads
-        self.keys_weights = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
-        self.queries_weights = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
-        self.values_weights = nn.Linear(config.n_embed_dim, self.head_size, bias=False)
-        self.register_buffer('mask', torch.tril(torch.ones(config.attention_window_size, config.attention_window_size)))
-
-    def forward(self, x: Tensor) -> Tensor:
-        seq_len = x.shape[1]
-        x = self.layer_norm(x)
-        keys: Tensor = self.keys_weights(x)
-        queries = self.queries_weights(x)
-        values = self.values_weights(x)
-        attention_weights = queries @ keys.swapaxes(1, 2)
-        attention_weights /= sqrt(self.head_size)
-        attention_weights = torch.masked_fill(attention_weights, self.mask[:seq_len, :seq_len] == 0, float('-inf'))
-        attention_weights = F.softmax(attention_weights, dim=-1)
-        out = attention_weights @ values
-
-        return out
 
 class MultiHeadMaskedAttention(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
-        assert (config.n_embed_dim % config.n_heads) == 0, "config.n_embed_dim must be dividable by n_heads"
-        self.heads = nn.ModuleList([MaskedAttentionHead(config) for _ in range(config.n_heads)])
+        assert (config.n_embed_dim % config.n_heads) == 0, "config.n_embed_dim must be dividable by n_heads."
+        # Output is n_embedding_dim * 3 because query, key and value weights packed into a single linear layer.
+        # So the actual n emedding dims of the key, values and queries will equal n_embed_dim
+        self.qkv_weights = nn.Linear(config.n_embed_dim, 3 * config.n_embed_dim)
         self.post_head_projection = nn.Linear(config.n_embed_dim, config.n_embed_dim)
         self.post_head_projection.is_proj_layer = True
+        self.config = config
 
     def forward(self, x: Tensor) -> Tensor:
-        attended = [head(x) for head in self.heads]
-        attended = torch.cat(attended, dim=2)
-        attended = self.post_head_projection(attended)
-        return attended
+        batch_size, seq_len, n_embed = x.shape
+        # Compute the queries, keys and values in a single linear forward pass and then split them into separate views.
+        queries, keys, values = self.qkv_weights(x).split(n_embed, -1)
+        shape_for_attention = (batch_size, seq_len, self.config.n_heads, n_embed // self.config.n_heads)
+        queries = queries.reshape(*shape_for_attention).transpose(1, 2)
+        keys = keys.reshape(*shape_for_attention).transpose(1, 2)
+        values = values.reshape(*shape_for_attention).transpose(1, 2)
+        y = F.scaled_dot_product_attention(queries, keys, values, is_causal=True) # (batch size, n_heads, seq len, embed // n_heads)
+        y = y.transpose(1, 2) # (batch size, n_heads, seq len, embed)
+        y = y.reshape(batch_size, seq_len, n_embed) # (batch size, seq len, embed)
+        return y
 
 class MLPBlock(nn.Sequential):
     def __init__(self, config: GPTConfig):
