@@ -23,16 +23,15 @@ class TrainingConfig:
     micro_batch_size = 32
     # Number of tokens to process before performing backward step
     # 2**19 = ~0.5M of tokens per batch
-    tokens_per_batch = 2**19 
+    tokens_per_step = 2**19 
     n_training_steps = 1500
     train_test_split_ratio = 0.1
     log_interval = 500
+    max_lr = 6e-4
+    n_warmup_steps = 715
 
     def __init__(self, model_config: GPTConfig):
-        assert self.tokens_per_batch % self.tokens_per_batch == 0, "sequences per batch should be dividable by tokens per batch"
         self.seq_len = model_config.attention_window_size
-        self.grad_accum_step = self.tokens_per_batch // (self.micro_batch_size * self.seq_len)
-
-@dataclass
-class OptimizerConfig:
-    learning_rate = 3e-4
+        assert self.tokens_per_step % (self.micro_batch_size * self.seq_len) == 0, "sequences per batch should be dividable by tokens per batch"
+        self.grad_accum_step = self.tokens_per_step // (self.micro_batch_size * self.seq_len)
+        self.min_lr = self.max_lr / 10

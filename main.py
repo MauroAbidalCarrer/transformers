@@ -11,15 +11,14 @@ from model import GPT
 from config import (
     GPTConfig,
     TrainingConfig,
-    OptimizerConfig,
     ENCODING_NAME,
     device,
 )
+from optimization import mk_scheduler
 
 
 model_conf = GPTConfig(vocab_size=50304)
 train_conf = TrainingConfig(model_conf)
-optim_conf = OptimizerConfig()
 
 
 def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
@@ -61,33 +60,34 @@ parmaters_count /= 1e6
 model_memory_usage /= 1024 ** 2
 print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.2f}MB")
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=optim_conf.learning_rate, fused=True)
+optimizer = torch.optim.AdamW(model.parameters(), lr=train_conf.max_lr, fused=True)
+scheduler = mk_scheduler(optimizer, train_conf)
 
 last_log_step = 0
 last_log_iter_start = time()
 last_step_time = time()
 for step in range(train_conf.n_training_steps):
-    if step % train_conf.log_interval == 0 or step == train_conf.n_training_steps - 1:
-        n_processed_tokens = (step - last_log_step) * train_conf.micro_batch_size * model_conf.attention_window_size * train_conf.grad_accum_step
-        time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
-        with torch.no_grad():
-            model = model.eval()
-            train_batch = get_random_batch(train)
-            train_metrics = eval_model(model, *train_batch)
-            test_batch = get_random_batch(test)
-            test_metrics = eval_model(model, *test_batch)
-            logging_format = "step: {step:4d} | train loss: {train_loss:5.3f} | val loss: {test_loss:5.3f} | dt: {dt:5.0f}ms | tokens/s: {tokens_per_sec:5.0f}"
-            print(
-                logging_format.format(
-                    step=step,
-                    train_loss=train_metrics["loss"],
-                    test_loss=test_metrics["loss"],
-                    dt=time_to_last_log_step_ms,
-                    tokens_per_sec= 1000 * n_processed_tokens / time_to_last_log_step_ms
-                )
-            )
-            last_log_step = step
-            last_log_iter_start = time()
+    # if step % train_conf.log_interval == 0 or step == train_conf.n_training_steps - 1:
+    #     n_processed_tokens = (step - last_log_step) * train_conf.micro_batch_size * model_conf.attention_window_size * train_conf.grad_accum_step
+    #     time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
+    #     with torch.no_grad():
+    #         model = model.eval()
+    #         train_batch = get_random_batch(train)
+    #         train_metrics = eval_model(model, *train_batch)
+    #         test_batch = get_random_batch(test)
+    #         test_metrics = eval_model(model, *test_batch)
+    #         logging_format = "step: {step:4d} | train loss: {train_loss:5.3f} | val loss: {test_loss:5.3f} | dt: {dt:5.0f}ms | tokens/s: {tokens_per_sec:5.0f}"
+    #         print(
+    #             logging_format.format(
+    #                 step=step,
+    #                 train_loss=train_metrics["loss"],
+    #                 test_loss=test_metrics["loss"],
+    #                 dt=time_to_last_log_step_ms,
+    #                 tokens_per_sec= 1000 * n_processed_tokens / time_to_last_log_step_ms
+    #             )
+    #         )
+    #         last_log_step = step
+    #         last_log_iter_start = time()
 
     model = model.train()
     optimizer.zero_grad()
@@ -104,13 +104,16 @@ for step in range(train_conf.n_training_steps):
             batch_loss += micro_batch_loss.item()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
+    scheduler.step()
 
     current_time = time()
     step_dt_ms = (current_time - last_step_time) * 1000
-    tokjens_per_sec = train_conf.tokens_per_batch / (current_time - last_step_time)
-    print(f"step {step:4d} | batch loss {batch_loss:5.3f} | batch loss norm {norm:3.1f} | dt {step_dt_ms:5.3f}ms | {tokjens_per_sec:5.1f} tokens/s")
+    tokjens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)
+    lr = scheduler.get_last_lr()
+    print(f"step {step:4d} | batch loss {batch_loss:5.3f} | batch loss norm {norm:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokjens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
 
+    
 model_state = model.state_dict()
 torch.save(model_state, "latest_model_params.pth")
 # generate from the model
