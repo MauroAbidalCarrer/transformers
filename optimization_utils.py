@@ -16,7 +16,6 @@ warnings.filterwarnings(
     module="torch.optim.lr_scheduler"
 )
 
-
 def mk_scheduler(optimizer: Optimizer, train_conf: TrainingConfig):
     n_cosine_steps = train_conf.n_training_steps - train_conf.n_warmup_steps
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
@@ -45,8 +44,6 @@ def mk_optimizer(model: nn.Module, train_conf: TrainingConfig) -> list[dict]:
     learnable_params = [param for _, param in model.named_parameters() if param.requires_grad]
     decay_params = [param for param in learnable_params if param.dim() >= 2]
     nodecay_params = [param for param in learnable_params if param.dim() < 2]
-    print("decay params count:", sum(p.numel() for p in decay_params))
-    print("no decay params count:", sum(p.numel() for p in nodecay_params))
     optim_groups = [
         {"params": decay_params, "weight_decay": train_conf.weight_decay},
         {"params": nodecay_params, "weight_decay": 0},

@@ -21,16 +21,21 @@ from optimization_utils import mk_scheduler, mk_optimizer
 
 ddp_rank = os.environ.get("RANK", -1)
 using_ddp = ddp_rank != -1
-def ddp_aware_print(*args, **kwargs):
-    if not using_ddp or ddp_rank == 0:
+def master_print(*args, **kwargs):
+    if master_process:
         print(*args, **kwargs)
 
-init_process_group(backend="nccl")
-ddp_local_rank = os.envieron.get("LOCAL_RANK", 0)
-master_process = ddp_rank == 0 or ddp_rank == -1
-ddp_world_size = os.environ.get("WORLD_SIZE", 1)
+if using_ddp:
+    init_process_group(backend="nccl")
+ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
+master_process = (ddp_local_rank == 0)
+ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
 device = torch.device(f"cuda:{ddp_local_rank}")
 torch.cuda.set_device(device)
+print("local rank:", ddp_local_rank, "master_process:", master_process)
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
 
 model_conf = GPTConfig(vocab_size=50304)
 train_conf = TrainingConfig(model_conf)
@@ -71,7 +76,7 @@ for param in model.parameters():
     parmaters_count += param.nelement()
 parmaters_count /= 1e6
 model_memory_usage /= 1024 ** 2
-print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.2f}MB")
+master_print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.2f}MB")
 
 optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
@@ -102,7 +107,7 @@ for step in range(train_conf.n_training_steps):
     step_dt_ms = (current_time - last_step_time) * 1000
     tokjens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)
     lr = scheduler.get_last_lr()
-    print(f"step {step:4d} | batch loss {batch_loss:5.3f} | batch loss norm {norm:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokjens_per_sec:5.1f} tokens/s")
+    master_print(f"step {step:4d} | batch loss {batch_loss:5.3f} | batch loss norm {norm:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokjens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
 
     
@@ -111,4 +116,7 @@ torch.save(model_state, "latest_model_params.pth")
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 
-print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
+master_print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
+
+if using_ddp:
+    destroy_process_group()
