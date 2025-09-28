@@ -2,12 +2,16 @@
 # torchrun --standalone  --nproc_per_node=4 main.py
 import os
 from time import time
+from contextlib import nullcontext
 
 import torch
 import tiktoken
 from torch import nn
 from torch import Tensor
+# from 
+import torch.distributed as dist
 from torch.nn import functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPT
@@ -21,9 +25,6 @@ from optimization_utils import mk_scheduler, mk_optimizer
 
 ddp_rank = os.environ.get("RANK", -1)
 using_ddp = ddp_rank != -1
-def master_print(*args, **kwargs):
-    if master_process:
-        print(*args, **kwargs)
 
 if using_ddp:
     init_process_group(backend="nccl")
@@ -32,13 +33,16 @@ master_process = (ddp_local_rank == 0)
 ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
 device = torch.device(f"cuda:{ddp_local_rank}")
 torch.cuda.set_device(device)
-print("local rank:", ddp_local_rank, "master_process:", master_process)
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
 model_conf = GPTConfig(vocab_size=50304)
-train_conf = TrainingConfig(model_conf)
+train_conf = TrainingConfig(model_conf, ddp_world_size)
+
+def master_print(*args, **kwargs):
+    if master_process:
+        print(*args, **kwargs)
 
 def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
     rand_idx = torch.randint(high=len(split) - model_conf.attention_window_size, size=(train_conf.micro_batch_size, ))
@@ -68,15 +72,12 @@ train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
 torch.set_float32_matmul_precision('high')
-model = torch.compile(GPT(model_conf).to(device))
-parmaters_count = 0
-model_memory_usage = 0
-for param in model.parameters():
-    model_memory_usage += param.nelement() * param.element_size()
-    parmaters_count += param.nelement()
-parmaters_count /= 1e6
-model_memory_usage /= 1024 ** 2
-master_print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.2f}MB")
+model = GPT(model_conf).to(device)
+# model = torch.compile(GPT(model_conf).to(device))
+param_stats = model.get_params_stats()
+master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
+if using_ddp:
+    model = DDP(model, device_ids=[ddp_local_rank]) # Allows us to perform weight updates among the devices.
 
 optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
@@ -97,12 +98,20 @@ for step in range(train_conf.n_training_steps):
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
+        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and using_ddp
+        backward_ctx = model.no_sync if use_no_sync_ctx else nullcontext
+        with backward_ctx():
             micro_batch_loss.backward()
-            batch_loss += micro_batch_loss.item()
+            # Use detach instead of item because we may need to call dist all reduce on it
+        batch_loss += micro_batch_loss.detach() 
+    if using_ddp:
+        dist.all_reduce(batch_loss, )
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     scheduler.step()
-
+    if device.type == "cuda":
+        torch.cuda.synchronize() # wait for the GPU to finish work
+    # logging
     current_time = time()
     step_dt_ms = (current_time - last_step_time) * 1000
     tokjens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)

@@ -102,3 +102,16 @@ class GPT(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             tokens = torch.cat((tokens, idx_next), dim=1) # (B, T+1)
         return tokens
+    
+    def get_params_stats(self) -> dict:
+        parmaters_count = 0
+        model_memory_usage = 0
+        for param in self.parameters():
+            model_memory_usage += param.nelement() * param.element_size()
+            parmaters_count += param.nelement()
+        parmaters_count /= 1e6
+        model_memory_usage /= 1024 ** 2
+        return {
+            "count": parmaters_count,
+            "mem_usage": model_memory_usage,
+        }
