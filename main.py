@@ -16,6 +16,7 @@ from config import (
     device,
 )
 
+
 model_conf = GPTConfig()
 train_conf = TrainingConfig(model_conf)
 optim_conf = OptimizerConfig()
@@ -49,7 +50,7 @@ n_test_samples = int(train_conf.train_test_split_ratio * len(shakespeare_txt))
 train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
-model = torch.compile(GPT(model_conf).to(device))
+model = GPT(model_conf).to(device)
 parmaters_count = 0
 model_memory_usage = 0
 for param in model.parameters():
@@ -63,7 +64,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=optim_conf.learning_rate)
 
 last_log_step = 0
 last_log_iter_start = time()
-for step in range(train_conf.n_training_steps):
+for step in tqdm(range(train_conf.n_training_steps)):
     if step % train_conf.log_interval == 0 or step == train_conf.n_training_steps - 1:
         n_processed_tokens = (step - last_log_step) * train_conf.micro_batch_size * model_conf.attention_window_size * train_conf.grad_accum_step
         time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
@@ -88,7 +89,7 @@ for step in range(train_conf.n_training_steps):
 
     model = model.train()
     optimizer.zero_grad(set_to_none=True)
-    for micro_step in tqdm(range(train_conf.grad_accum_step)):
+    for micro_step in range(train_conf.grad_accum_step):
         # sample a batch of data
         x, y_true = get_random_batch(train)
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
@@ -97,6 +98,7 @@ for step in range(train_conf.n_training_steps):
             y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
             loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
             loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
 
 model_state = model.state_dict()
