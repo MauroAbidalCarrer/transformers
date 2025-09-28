@@ -1,4 +1,6 @@
-from tqdm import tqdm
+# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+# torchrun --standalone  --nproc_per_node=4 main.py
+import os
 from time import time
 
 import torch
@@ -6,20 +8,32 @@ import tiktoken
 from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
+from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPT
 from config import (
     GPTConfig,
     TrainingConfig,
     ENCODING_NAME,
-    device,
 )
-from optimization import mk_scheduler, mk_optimizer
+from optimization_utils import mk_scheduler, mk_optimizer
 
+
+ddp_rank = os.environ.get("RANK", -1)
+using_ddp = ddp_rank != -1
+def ddp_aware_print(*args, **kwargs):
+    if not using_ddp or ddp_rank == 0:
+        print(*args, **kwargs)
+
+init_process_group(backend="nccl")
+ddp_local_rank = os.envieron.get("LOCAL_RANK", 0)
+master_process = ddp_rank == 0 or ddp_rank == -1
+ddp_world_size = os.environ.get("WORLD_SIZE", 1)
+device = torch.device(f"cuda:{ddp_local_rank}")
+torch.cuda.set_device(device)
 
 model_conf = GPTConfig(vocab_size=50304)
 train_conf = TrainingConfig(model_conf)
-
 
 def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
     rand_idx = torch.randint(high=len(split) - model_conf.attention_window_size, size=(train_conf.micro_batch_size, ))
@@ -39,7 +53,6 @@ def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
             "accuracy": (torch.argmax(y_pred, dim=1) == y_true).float().mean().cpu().item(),
         }
 
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 with open("input.txt", 'r', encoding='utf-8') as f:
     shakespeare_txt = f.read()
 tokenizer = tiktoken.get_encoding(ENCODING_NAME)
@@ -67,27 +80,6 @@ last_log_step = 0
 last_log_iter_start = time()
 last_step_time = time()
 for step in range(train_conf.n_training_steps):
-    # if step % train_conf.log_interval == 0 or step == train_conf.n_training_steps - 1:
-    #     n_processed_tokens = (step - last_log_step) * train_conf.micro_batch_size * model_conf.attention_window_size * train_conf.grad_accum_step
-    #     time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
-    #     with torch.no_grad():
-    #         model = model.eval()
-    #         train_batch = get_random_batch(train)
-    #         train_metrics = eval_model(model, *train_batch)
-    #         test_batch = get_random_batch(test)
-    #         test_metrics = eval_model(model, *test_batch)
-    #         logging_format = "step: {step:4d} | train loss: {train_loss:5.3f} | val loss: {test_loss:5.3f} | dt: {dt:5.0f}ms | tokens/s: {tokens_per_sec:5.0f}"
-    #         print(
-    #             logging_format.format(
-    #                 step=step,
-    #                 train_loss=train_metrics["loss"],
-    #                 test_loss=test_metrics["loss"],
-    #                 dt=time_to_last_log_step_ms,
-    #                 tokens_per_sec= 1000 * n_processed_tokens / time_to_last_log_step_ms
-    #             )
-    #         )
-    #         last_log_step = step
-    #         last_log_iter_start = time()
 
     model = model.train()
     optimizer.zero_grad()
