@@ -17,7 +17,7 @@ from config import (
 )
 
 
-model_conf = GPTConfig()
+model_conf = GPTConfig(vocab_size=50304)
 train_conf = TrainingConfig(model_conf)
 optim_conf = OptimizerConfig()
 
@@ -51,7 +51,6 @@ train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
 torch.set_float32_matmul_precision('high')
-print("precision set to high")
 model = torch.compile(GPT(model_conf).to(device))
 parmaters_count = 0
 model_memory_usage = 0
