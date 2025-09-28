@@ -50,7 +50,7 @@ n_test_samples = int(train_conf.train_test_split_ratio * len(shakespeare_txt))
 train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
-model = GPT(model_conf).to(device)
+model = torch.compile(GPT(model_conf).to(device))
 parmaters_count = 0
 model_memory_usage = 0
 for param in model.parameters():
