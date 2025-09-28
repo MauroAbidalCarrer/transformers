@@ -105,7 +105,7 @@ for step in range(train_conf.n_training_steps):
             # Use detach instead of item because we may need to call dist all reduce on it
         batch_loss += micro_batch_loss.detach() 
     if using_ddp:
-        dist.all_reduce(batch_loss, )
+        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     scheduler.step()
