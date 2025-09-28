@@ -77,7 +77,7 @@ model = GPT(model_conf).to(device)
 param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
 if using_ddp:
-    model = DDP(model, device_ids=[ddp_local_rank]) # Allows us to perform weight updates among the devices.
+    model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
 
 optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
