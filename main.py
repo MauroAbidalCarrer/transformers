@@ -1,4 +1,3 @@
-
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 #OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
 import os
@@ -21,7 +20,7 @@ from config import (
     TrainingConfig,
     ENCODING_NAME,
 )
-from data_utils import get_dataset_splits, mk_data_loader
+from data_utils import DataLoaderLite
 from optimization_utils import mk_scheduler, mk_optimizer
 
 
@@ -31,7 +30,7 @@ using_ddp = ddp_rank != -1
 if using_ddp:
     init_process_group(backend="nccl")
 ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
-master_process = (ddp_local_rank == 0)
+is_master_process = (ddp_local_rank == 0)
 ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
 device = torch.device(f"cuda:{ddp_local_rank}")
 torch.cuda.set_device(device)
@@ -43,7 +42,7 @@ model_conf = GPTConfig(vocab_size=50304)
 train_conf = TrainingConfig(model_conf, ddp_world_size)
 
 def master_print(*args, **kwargs):
-    if master_process:
+    if is_master_process:
         print(*args, **kwargs)
 
 def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
@@ -57,8 +56,16 @@ def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
             "accuracy": (torch.argmax(y_pred, dim=1) == y_true).float().mean().cpu().item(),
         }
 
-train_split, test_split = get_dataset_splits(train_conf)
-train_dl = mk_data_loader(train_split, train_conf, ddp_world_size, ddp_rank)
+data_loader = DataLoaderLite(
+    train_conf.micro_batch_size,
+    model_conf.attention_window_size,
+    ddp_rank,
+    ddp_world_size,
+    "train",
+    is_master_process,
+)
+# train_split, test_split = get_dataset_splits(train_conf)
+# train_dl = mk_data_loader(train_split, train_conf, ddp_world_size, ddp_rank)
 # test_dl = mk_data_loader(test_split, train_conf, ddp_world_size, ddp_rank)
 
 torch.set_float32_matmul_precision('high')
@@ -80,7 +87,9 @@ for step in range(train_conf.n_training_steps):
     model = model.train()
     optimizer.zero_grad()
     batch_loss = 0
-    for micro_step, (x, y_true) in enumerate(train_dl):
+    for micro_step in range(train_conf.n_training_steps):
+        x, y_true = data_loader.next_batch()
+        x, y_true = x.to(device), y_true.to(device)
         # sample a batch of data
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
         # evaluate the loss
@@ -92,6 +101,15 @@ for step in range(train_conf.n_training_steps):
         with backward_ctx():
             micro_batch_loss.backward()
             # Use detach instead of item because we may need to call dist all reduce on it
+
+        # use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and using_ddp
+        # sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
+        # with sync_ctx(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        #     y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
+        #     micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
+        #     micro_batch_loss.backward()
+        #     # Use detach instead of item because we may need to call dist all reduce on it
+
         batch_loss += micro_batch_loss.detach() 
     if using_ddp:
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)

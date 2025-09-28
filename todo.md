@@ -13,6 +13,6 @@
 <!-- 1. Use fused AdamW -->
 <!-- 1. Use a learning rate scheduler. -->
 <!-- 1. Better handling of optimizer hyperparameters. -->
-1. Use DDP.
+<!-- 1. Use DDP. -->
 1. Refacto data loader
 1. use fineWeb-EDU.
