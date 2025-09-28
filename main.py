@@ -50,6 +50,8 @@ n_test_samples = int(train_conf.train_test_split_ratio * len(shakespeare_txt))
 train = dataset[:-n_test_samples]
 test = dataset[-n_test_samples:]
 
+torch.set_float32_matmul_precision('high')
+print("precision set to high")
 model = torch.compile(GPT(model_conf).to(device))
 parmaters_count = 0
 model_memory_usage = 0
@@ -58,13 +60,14 @@ for param in model.parameters():
     parmaters_count += param.nelement()
 parmaters_count /= 1e6
 model_memory_usage /= 1024 ** 2
-print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.3f}MB")
+print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.2f}MB")
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=optim_conf.learning_rate)
+optimizer = torch.optim.AdamW(model.parameters(), lr=optim_conf.learning_rate, fused=True)
 
 last_log_step = 0
 last_log_iter_start = time()
-for step in tqdm(range(train_conf.n_training_steps)):
+last_step_time = time()
+for step in range(train_conf.n_training_steps):
     if step % train_conf.log_interval == 0 or step == train_conf.n_training_steps - 1:
         n_processed_tokens = (step - last_log_step) * train_conf.micro_batch_size * model_conf.attention_window_size * train_conf.grad_accum_step
         time_to_last_log_step_ms = (time() - last_log_iter_start) * 1000
@@ -88,7 +91,8 @@ for step in tqdm(range(train_conf.n_training_steps)):
             last_log_iter_start = time()
 
     model = model.train()
-    optimizer.zero_grad(set_to_none=True)
+    optimizer.zero_grad()
+    batch_loss = 0
     for micro_step in range(train_conf.grad_accum_step):
         # sample a batch of data
         x, y_true = get_random_batch(train)
@@ -96,10 +100,17 @@ for step in tqdm(range(train_conf.n_training_steps)):
         # evaluate the loss
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
-            loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
-            loss.backward()
+            micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
+            micro_batch_loss.backward()
+            batch_loss += micro_batch_loss.item()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
+
+    current_time = time()
+    step_dt_ms = (current_time - last_step_time) * 1000
+    tokjens_per_sec = train_conf.tokens_per_batch / (current_time - last_step_time)
+    print(f"step {step:4d} | batch loss {batch_loss:5.3f} | batch loss norm {norm:3.1f} | dt {step_dt_ms:5.3f}ms | {tokjens_per_sec:5.1f} tokens/s")
+    last_step_time = current_time
 
 model_state = model.state_dict()
 torch.save(model_state, "latest_model_params.pth")
