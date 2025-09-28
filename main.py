@@ -21,6 +21,7 @@ from config import (
     TrainingConfig,
     ENCODING_NAME,
 )
+from data_utils import get_dataset_splits, mk_data_loader
 from optimization_utils import mk_scheduler, mk_optimizer
 
 
@@ -45,13 +46,6 @@ def master_print(*args, **kwargs):
     if master_process:
         print(*args, **kwargs)
 
-def get_random_batch(split: Tensor) -> tuple[Tensor, Tensor]:
-    rand_idx = torch.randint(high=len(split) - model_conf.attention_window_size, size=(train_conf.micro_batch_size, ))
-    x = torch.stack([split[idx:idx + model_conf.attention_window_size] for idx in rand_idx])
-    y = torch.stack([split[idx + 1:idx + model_conf.attention_window_size + 1] for idx in rand_idx])
-    x, y = x.to(device), y.to(device)
-    return x, y
-
 def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
     model = model.eval()
     with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
@@ -63,14 +57,9 @@ def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
             "accuracy": (torch.argmax(y_pred, dim=1) == y_true).float().mean().cpu().item(),
         }
 
-with open("input.txt", 'r', encoding='utf-8') as f:
-    shakespeare_txt = f.read()
-tokenizer = tiktoken.get_encoding(ENCODING_NAME)
-encoded_txt = tokenizer.encode(shakespeare_txt)
-dataset = torch.tensor(encoded_txt, dtype=torch.long)
-n_test_samples = int(train_conf.train_test_split_ratio * len(shakespeare_txt))
-train = dataset[:-n_test_samples]
-test = dataset[-n_test_samples:]
+train_split, test_split = get_dataset_splits(train_conf)
+train_dl = mk_data_loader(train_split, train_conf, ddp_world_size, ddp_rank)
+# test_dl = mk_data_loader(test_split, train_conf, ddp_world_size, ddp_rank)
 
 torch.set_float32_matmul_precision('high')
 model = GPT(model_conf).to(device)
@@ -91,9 +80,8 @@ for step in range(train_conf.n_training_steps):
     model = model.train()
     optimizer.zero_grad()
     batch_loss = 0
-    for micro_step in range(train_conf.grad_accum_step):
+    for micro_step, (x, y_true) in enumerate(train_dl):
         # sample a batch of data
-        x, y_true = get_random_batch(train)
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
         # evaluate the loss
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
@@ -126,6 +114,7 @@ torch.save(model_state, "latest_model_params.pth")
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
 
+tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 master_print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
 
 if using_ddp:
