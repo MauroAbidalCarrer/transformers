@@ -29,6 +29,9 @@ class TrainingConfig:
     log_interval = 500
     max_lr = 6e-4
     n_warmup_steps = 715
+    weight_decay = 0.1
+    betas = (0.9, 0.95)
+    eps = 1e-8
 
     def __init__(self, model_config: GPTConfig):
         self.seq_len = model_config.attention_window_size

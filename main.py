@@ -14,7 +14,7 @@ from config import (
     ENCODING_NAME,
     device,
 )
-from optimization import mk_scheduler
+from optimization import mk_scheduler, mk_optimizer
 
 
 model_conf = GPTConfig(vocab_size=50304)
@@ -60,7 +60,7 @@ parmaters_count /= 1e6
 model_memory_usage /= 1024 ** 2
 print(f"number of parameters: {parmaters_count:.2f}M, model memory usage: {model_memory_usage:.2f}MB")
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=train_conf.max_lr, fused=True)
+optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
 
 last_log_step = 0
