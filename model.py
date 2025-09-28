@@ -5,7 +5,7 @@ from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
 
-from config import GPTConfig, device
+from config import GPTConfig
 
 
 class MultiHeadMaskedAttention(nn.Module):
@@ -82,7 +82,7 @@ class GPT(nn.Module):
 
     def forward(self, tokens_idx: Tensor) -> Tensor:
         seq_len = tokens_idx.shape[1]
-        token_postions = torch.arange(seq_len, device=device)
+        token_postions = torch.arange(seq_len, device=tokens_idx.device)
         positional_embedded_tokens = self.positional_embedding(token_postions)
         value_embedded_tokens = self.token_embedding(tokens_idx)
         embedded_tokens = positional_embedded_tokens + value_embedded_tokens
