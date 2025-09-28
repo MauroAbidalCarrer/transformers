@@ -1,12 +1,9 @@
 from dataclasses import dataclass
 
-import torch
 import tiktoken
 
 
 ENCODING_NAME = "gpt2"
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 @dataclass
 class GPTConfig:
@@ -20,7 +17,7 @@ class GPTConfig:
 class TrainingConfig:
     # number of batches computed in parallel on the GPU
     # Set it to the maximum batch size the GPU can hold
-    micro_batch_size = 32
+    micro_batch_size = 16
     # Number of tokens to process before performing backward step
     # 2**19 = ~0.5M of tokens per batch
     tokens_per_step = 2**19 
@@ -33,8 +30,9 @@ class TrainingConfig:
     betas = (0.9, 0.95)
     eps = 1e-8
 
-    def __init__(self, model_config: GPTConfig):
+    def __init__(self, model_config: GPTConfig, n_gpus=0):
         self.seq_len = model_config.attention_window_size
-        assert self.tokens_per_step % (self.micro_batch_size * self.seq_len) == 0, "sequences per batch should be dividable by tokens per batch"
-        self.grad_accum_step = self.tokens_per_step // (self.micro_batch_size * self.seq_len)
+        self.tokens_per_micro_step = self.micro_batch_size * self.seq_len * n_gpus
+        assert self.tokens_per_step % self.tokens_per_micro_step == 0, "sequences per batch should be dividable by tokens per batch"
+        self.grad_accum_step = self.tokens_per_step // self.tokens_per_micro_step
         self.min_lr = self.max_lr / 10

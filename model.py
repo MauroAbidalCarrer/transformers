@@ -5,7 +5,7 @@ from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
 
-from config import GPTConfig, device
+from config import GPTConfig
 
 
 class MultiHeadMaskedAttention(nn.Module):
@@ -82,7 +82,7 @@ class GPT(nn.Module):
 
     def forward(self, tokens_idx: Tensor) -> Tensor:
         seq_len = tokens_idx.shape[1]
-        token_postions = torch.arange(seq_len, device=device)
+        token_postions = torch.arange(seq_len, device=tokens_idx.device)
         positional_embedded_tokens = self.positional_embedding(token_postions)
         value_embedded_tokens = self.token_embedding(tokens_idx)
         embedded_tokens = positional_embedded_tokens + value_embedded_tokens
@@ -102,3 +102,16 @@ class GPT(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             tokens = torch.cat((tokens, idx_next), dim=1) # (B, T+1)
         return tokens
+    
+    def get_params_stats(self) -> dict:
+        parmaters_count = 0
+        model_memory_usage = 0
+        for param in self.parameters():
+            model_memory_usage += param.nelement() * param.element_size()
+            parmaters_count += param.nelement()
+        parmaters_count /= 1e6
+        model_memory_usage /= 1024 ** 2
+        return {
+            "count": parmaters_count,
+            "mem_usage": model_memory_usage,
+        }
