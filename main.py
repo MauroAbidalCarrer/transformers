@@ -22,6 +22,7 @@ from config import (
 )
 from model import GPT
 from data_utils import DataLoaderLite
+from hella_swag import iterate_examples, render_example
 from optimization_utils import mk_scheduler, mk_optimizer
 
 
@@ -54,8 +55,58 @@ def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: T
             val_loss_accum += micro_batch_loss.detach()
     if torch_conf.using_ddp:
         dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
-
     master_print(f"validation loss: {val_loss_accum.item():.4f}")
+
+def get_most_likely_row(tokens, mask, logits):
+    # evaluate the autoregressive loss at all positions
+    shift_logits = (logits[..., :-1, :]).contiguous()
+    shift_tokens = (tokens[..., 1:]).contiguous()
+    flat_shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+    flat_shift_tokens = shift_tokens.view(-1)
+    shift_losses = F.cross_entropy(flat_shift_logits, flat_shift_tokens, reduction='none')
+    shift_losses = shift_losses.view(tokens.size(0), -1)
+    # now get the average loss just for the completion region (where mask == 1), in each row
+    shift_mask = (mask[..., 1:]).contiguous() # we must shift mask, so we start at the last prompt token
+    masked_shift_losses = shift_losses * shift_mask
+    # sum and divide by the number of 1s in the mask
+    sum_loss = masked_shift_losses.sum(dim=1)
+    avg_loss = sum_loss / shift_mask.sum(dim=1)
+    # now we have a loss for each of the 4 completions
+    # the one with the lowest loss should be the most likely
+    pred_norm = avg_loss.argmin().item()
+    return pred_norm
+
+def hella_swag_eval(model: nn.Module, torch_config: TorchConfig):
+    eval_start_time = time()
+    num_correct_norm = 0
+    num_total = 0
+    for i, example in enumerate(iterate_examples("val")):
+        # only process examples where i % ddp_world_size == ddp_rank
+        if i % torch_config.ddp_world_size != torch_config.ddp_rank:
+            continue
+        # render the example into tokens and labels
+        _, tokens, mask, label = render_example(example)
+        tokens = tokens.to(torch_config.device)
+        mask = mask.to(torch_config.device)
+        # get the logits
+        with torch.no_grad():
+            with torch.autocast(device_type=torch_config.device_type, dtype=torch.bfloat16):
+                logits = model(tokens)
+            pred_norm = get_most_likely_row(tokens, mask, logits)
+        num_total += 1
+        num_correct_norm += int(pred_norm == label)
+    # reduce the stats across all processes
+    if torch_config.using_ddp:
+        num_total = torch.tensor(num_total, dtype=torch.long, device=torch_config.device)
+        num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=torch_config.device)
+        dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+        dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+        num_total = num_total.item()
+        num_correct_norm = num_correct_norm.item()
+    acc_norm = num_correct_norm / num_total
+    time_to_eval_ms = (time() - eval_start_time) * 1000
+    master_print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}, time to eval: {time_to_eval_ms:4.0f}ms")
+
 
 def training_step(
         model: nn.Module,
@@ -127,7 +178,8 @@ mk_data_loader = partial(
 train_data_loader = mk_data_loader("train")
 val_data_loader = mk_data_loader("val")
 torch.set_float32_matmul_precision('high')
-model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
+model = raw_model = GPT(model_conf).to(torch_config.device)
+# model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
 param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
 if torch_config.using_ddp:
@@ -141,6 +193,9 @@ for step in range(train_conf.n_training_steps):
     # validation loss
     if step % train_conf.validation_freq == 0:
         validation_step(model, val_data_loader, torch_config)
+    # hella swag eval
+    if step % train_conf.hella_swag_eval_freq == 0:
+        hella_swag_eval(model, torch_config)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
     # logging

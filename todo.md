@@ -16,9 +16,9 @@
 <!-- 1. Use DDP. -->
 <!-- 1. Refacto data loader -->
 <!-- 1. use fineWeb-EDU. -->
-1. Implement validation steps
-1. Implement generation debug step
-1. Implement HellaSwag ealuation
+<!-- 1. Implement validation steps -->
+1. Implement HellaSwag evaluation
 1. Fix data loader
 1. Use FP8?
 1. Use Wandb
+1. Implement generation debug step
