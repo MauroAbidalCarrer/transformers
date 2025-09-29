@@ -8,9 +8,10 @@ import torch
 import tiktoken
 from torch import nn
 from torch import Tensor
-# from 
 import torch.distributed as dist
+from torch.optim import Optimizer
 from torch.nn import functional as F
+from torch.optim.lr_scheduler import LRScheduler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
@@ -36,6 +37,42 @@ def setup_torch(torch_config: TorchConfig):
 def master_print(*args, **kwargs):
     if torch_config.is_master_process:
         print(*args, **kwargs)
+
+def training_step(
+        model: nn.Module,
+        data_loader: DataLoaderLite,
+        torch_config: TorchConfig,
+        optimizer: Optimizer,
+        scheduler: LRScheduler,
+    ) -> dict:
+    model = model.train()
+    optimizer.zero_grad()
+    batch_loss = 0
+    for micro_step in range(train_conf.grad_accum_step):
+        x, y_true = data_loader.next_batch()
+        x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
+        # sample a batch of data
+        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
+        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
+        sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
+        with sync_ctx(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
+            y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
+            micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
+            micro_batch_loss.backward()
+            # Use detach instead of item because we may need to call dist all reduce on it
+        batch_loss += micro_batch_loss.detach() 
+    if torch_config.using_ddp:
+        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
+    loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
+    scheduler.step()
+    if torch_config.device.type == "cuda":
+        torch.cuda.synchronize() # wait for the GPU to finish work
+    return {
+        "loss": batch_loss,
+        "loss_norm": loss_norm,
+    }
+
 
 def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
     model = model.eval()
@@ -71,41 +108,15 @@ if torch_config.using_ddp:
 optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
 
-last_log_step = 0
-last_log_iter_start = time()
 last_step_time = time()
-for step in range(train_conf.n_training_steps):
-
-    model = model.train()
-    optimizer.zero_grad()
-    batch_loss = 0
-    for micro_step in range(train_conf.grad_accum_step):
-        x, y_true = data_loader.next_batch()
-        x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
-        # sample a batch of data
-        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
-        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
-        sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
-        with sync_ctx(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
-            y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
-            micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
-            micro_batch_loss.backward()
-            # Use detach instead of item because we may need to call dist all reduce on it
-
-        batch_loss += micro_batch_loss.detach() 
-    if torch_config.using_ddp:
-        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    optimizer.step()
-    scheduler.step()
-    if torch_config.device.type == "cuda":
-        torch.cuda.synchronize() # wait for the GPU to finish work
+for step in range(train_conf.n_training_steps):    
+    step_stats = training_step(model, data_loader, torch_config, optimizer, scheduler)
     # logging
     current_time = time()
     step_dt_ms = (current_time - last_step_time) * 1000
-    tokjens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)
+    tokens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)
     lr = scheduler.get_last_lr()
-    master_print(f"step {step:4d} | batch loss {batch_loss:5.3f} | batch loss norm {norm:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokjens_per_sec:5.1f} tokens/s")
+    master_print(f"step {step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
     # checkpoints
     if torch_config.is_master_process:
