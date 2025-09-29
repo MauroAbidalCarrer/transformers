@@ -1,4 +1,3 @@
-# wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 # OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
 import os
 from time import time
