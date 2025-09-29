@@ -1,6 +1,7 @@
 # OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
 import os
 from time import time
+from functools import partial
 from contextlib import nullcontext
 
 import torch
@@ -13,13 +14,13 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-from model import GPT
 from config import (
     GPTConfig,
     TorchConfig,
-    TrainingConfig,
     ENCODING_NAME,
+    TrainingConfig,
 )
+from model import GPT
 from data_utils import DataLoaderLite
 from optimization_utils import mk_scheduler, mk_optimizer
 
@@ -35,6 +36,29 @@ def setup_torch(torch_config: TorchConfig):
 def master_print(*args, **kwargs):
     if torch_config.is_master_process:
         print(*args, **kwargs)
+
+@torch.no_grad()
+def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: TorchConfig) -> dict:
+    model.eval()
+    data_loader.reset()
+    with torch.no_grad():
+        val_loss_accum = 0.0
+        val_loss_steps = 20
+        for _ in range(val_loss_steps):
+            x, y_true = data_loader.next_batch()
+            x, y_true = x.to(torch_conf.device), y_true.to(torch_conf.device)
+            y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
+            with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
+                y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
+            micro_batch_loss = F.cross_entropy(y_pred, y_true) / val_loss_steps
+            val_loss_accum += micro_batch_loss.detach()
+        master_print("micro validation steps done")
+    if torch_conf.using_ddp:
+        master_print("reducing loss")
+        dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+        master_print("loss reducing done")
+
+    master_print(f"validation loss: {val_loss_accum.item():.4f}")
 
 def training_step(
         model: nn.Module,
@@ -95,14 +119,16 @@ setup_torch(torch_config)
 model_conf = GPTConfig(vocab_size=50304)
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
 
-data_loader = DataLoaderLite(
+mk_data_loader = partial(
+    DataLoaderLite,
     train_conf.micro_batch_size,
     model_conf.attention_window_size,
     torch_config.ddp_rank,
     torch_config.ddp_world_size,
-    "train",
-    torch_config.is_master_process,
+    master_process=torch_config.is_master_process,
 )
+train_data_loader = mk_data_loader("train")
+val_data_loader = mk_data_loader("val")
 torch.set_float32_matmul_precision('high')
 model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
 param_stats = model.get_params_stats()
@@ -115,7 +141,11 @@ scheduler = mk_scheduler(optimizer, train_conf)
 
 last_step_time = time()
 for step in range(train_conf.n_training_steps):    
-    step_stats = training_step(model, data_loader, torch_config, optimizer, scheduler)
+    # validation loss
+    if torch_config.is_master_process and step % train_conf.validation_freq == 0:
+        validation_step(model, val_data_loader, torch_config)
+    # Training step
+    step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
     # logging
     current_time = time()
     step_dt_ms = (current_time - last_step_time) * 1000
