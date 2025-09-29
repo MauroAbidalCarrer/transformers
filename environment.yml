@@ -12,7 +12,6 @@ dependencies:
   - torchvision==0.20.1
   - plotly==6.2.0
   - pandas==2.2.3
-  - pyarrow==19.0.0
   - matplotlib==3.10.3
   - ipykernel==6.29.5
   - ipywidgets==8.1.5
@@ -22,6 +21,7 @@ dependencies:
   - scipy==1.15.3
   - optuna==4.4.0  
   - tiktoken==0.11.0
+  - datasets==4.1.1
   - pip
   - pip:
     # install kagglehub through pip to get the lateset version.

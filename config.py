@@ -17,11 +17,11 @@ class GPTConfig:
 class TrainingConfig:
     # number of batches computed in parallel on the GPU
     # Set it to the maximum batch size the GPU can hold
-    micro_batch_size = 16
+    micro_batch_size = 64
     # Number of tokens to process before performing backward step
     # 2**19 = ~0.5M of tokens per batch
     tokens_per_step = 2**19 
-    n_training_steps = 1500
+    n_training_steps = 19000
     train_test_split_ratio = 0.1
     log_interval = 500
     max_lr = 6e-4
