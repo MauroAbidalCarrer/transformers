@@ -1,3 +1,4 @@
+wandb/*
 hellaswag/*
 checkpoints/*
 edu_fineweb10B/*
