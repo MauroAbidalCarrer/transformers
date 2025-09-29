@@ -17,6 +17,7 @@ from torch.distributed import init_process_group, destroy_process_group
 from model import GPT
 from config import (
     GPTConfig,
+    TorchConfig,
     TrainingConfig,
     ENCODING_NAME,
 )
@@ -24,31 +25,21 @@ from data_utils import DataLoaderLite
 from optimization_utils import mk_scheduler, mk_optimizer
 
 
-ddp_rank = int(os.environ.get("RANK", -1))
-using_ddp = ddp_rank != -1
-ddp_rank = ddp_rank if using_ddp else 0
-
-if using_ddp:
-    init_process_group(backend="nccl")
-ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
-is_master_process = (ddp_local_rank == 0)
-ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
-device = torch.device(f"cuda:{ddp_local_rank}")
-torch.cuda.set_device(device)
-torch.manual_seed(1337)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(1337)
-
-model_conf = GPTConfig(vocab_size=50304)
-train_conf = TrainingConfig(model_conf, ddp_world_size)
+def setup_torch(torch_config: TorchConfig):
+    if torch_config.using_ddp:
+        init_process_group(backend="nccl")
+    torch.cuda.set_device(torch_config.device)
+    torch.manual_seed(1337)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(1337)
 
 def master_print(*args, **kwargs):
-    if is_master_process:
+    if torch_config.is_master_process:
         print(*args, **kwargs)
 
 def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
     model = model.eval()
-    with torch.no_grad(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+    with torch.no_grad(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
         y_pred = model(x) # (batch size, window size, n embeding dims)
         y_pred = y_pred.reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size) # (batch size * window size, n embeding dims)
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
@@ -57,20 +48,25 @@ def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
             "accuracy": (torch.argmax(y_pred, dim=1) == y_true).float().mean().cpu().item(),
         }
 
+torch_config = TorchConfig()
+setup_torch(torch_config)
+model_conf = GPTConfig(vocab_size=50304)
+train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
+
 data_loader = DataLoaderLite(
     train_conf.micro_batch_size,
     model_conf.attention_window_size,
-    ddp_rank,
-    ddp_world_size,
+    torch_config.ddp_rank,
+    torch_config.ddp_world_size,
     "train",
-    is_master_process,
+    torch_config.is_master_process,
 )
 torch.set_float32_matmul_precision('high')
-model = raw_model = torch.compile(GPT(model_conf).to(device))
+model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
 param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
-if using_ddp:
-    model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
+if torch_config.using_ddp:
+    model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
 
 optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
@@ -85,24 +81,24 @@ for step in range(train_conf.n_training_steps):
     batch_loss = 0
     for micro_step in range(train_conf.grad_accum_step):
         x, y_true = data_loader.next_batch()
-        x, y_true = x.to(device), y_true.to(device)
+        x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
         # sample a batch of data
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
-        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and using_ddp
+        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
         sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
-        with sync_ctx(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        with sync_ctx(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
             y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
             micro_batch_loss.backward()
             # Use detach instead of item because we may need to call dist all reduce on it
 
         batch_loss += micro_batch_loss.detach() 
-    if using_ddp:
+    if torch_config.using_ddp:
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     scheduler.step()
-    if device.type == "cuda":
+    if torch_config.device.type == "cuda":
         torch.cuda.synchronize() # wait for the GPU to finish work
     # logging
     current_time = time()
@@ -112,7 +108,7 @@ for step in range(train_conf.n_training_steps):
     master_print(f"step {step:4d} | batch loss {batch_loss:5.3f} | batch loss norm {norm:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokjens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
     # checkpoints
-    if is_master_process:
+    if torch_config.is_master_process:
         if step > 0 and (step % 100 == 0 or step == train_conf.n_training_steps - 1):
             os.makedirs("checkpoints", exist_ok=True)
             # optionally write model checkpoints
@@ -136,10 +132,10 @@ for step in range(train_conf.n_training_steps):
 model_state = model.state_dict()
 torch.save(model_state, "latest_model_params.pth")
 # generate from the model
-context = torch.zeros((1, 1), dtype=torch.long, device=device)
+context = torch.zeros((1, 1), dtype=torch.long, device=torch_config.device)
 
 tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 master_print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
 
-if using_ddp:
+if torch_config.using_ddp:
     destroy_process_group()
