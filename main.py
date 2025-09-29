@@ -65,13 +65,9 @@ data_loader = DataLoaderLite(
     "train",
     is_master_process,
 )
-# train_split, test_split = get_dataset_splits(train_conf)
-# train_dl = mk_data_loader(train_split, train_conf, ddp_world_size, ddp_rank)
-# test_dl = mk_data_loader(test_split, train_conf, ddp_world_size, ddp_rank)
 
 torch.set_float32_matmul_precision('high')
-model = GPT(model_conf).to(device)
-# model = torch.compile(GPT(model_conf).to(device))
+model = torch.compile(GPT(model_conf).to(device))
 param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
 if using_ddp:
@@ -93,23 +89,13 @@ for step in range(train_conf.n_training_steps):
         x, y_true = x.to(device), y_true.to(device)
         # sample a batch of data
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
-        # evaluate the loss
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and using_ddp
+        sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
+        with sync_ctx(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
             y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
-        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and using_ddp
-        backward_ctx = model.no_sync if use_no_sync_ctx else nullcontext
-        with backward_ctx():
             micro_batch_loss.backward()
             # Use detach instead of item because we may need to call dist all reduce on it
-
-        # use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and using_ddp
-        # sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
-        # with sync_ctx(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):
-        #     y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
-        #     micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
-        #     micro_batch_loss.backward()
-        #     # Use detach instead of item because we may need to call dist all reduce on it
 
         batch_loss += micro_batch_loss.detach() 
     if using_ddp:
