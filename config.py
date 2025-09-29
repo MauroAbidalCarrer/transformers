@@ -32,7 +32,7 @@ class TrainingConfig:
     betas = (0.9, 0.95)
     eps = 1e-8
     save_checkpoint_freq = 2
-    validation_freq = 1
+    validation_freq = 100
 
     def __init__(self, model_config: GPTConfig, n_gpus=0):
         self.seq_len = model_config.attention_window_size
