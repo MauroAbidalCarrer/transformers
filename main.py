@@ -88,7 +88,7 @@ for step in range(train_conf.n_training_steps):
     model = model.train()
     optimizer.zero_grad()
     batch_loss = 0
-    for micro_step in range(train_conf.n_training_steps):
+    for micro_step in range(train_conf.grad_accum_step):
         x, y_true = data_loader.next_batch()
         x, y_true = x.to(device), y_true.to(device)
         # sample a batch of data
