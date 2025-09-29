@@ -4,6 +4,7 @@ from time import time
 from functools import partial
 from contextlib import nullcontext
 
+import wandb
 import torch
 import tiktoken
 from torch import nn
@@ -167,6 +168,16 @@ setup_torch(torch_config)
 model_conf = GPTConfig(vocab_size=50304)
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
 
+if torch_config.is_master_process:
+    wandb.init(
+        project="gpt-training",   # give your project a name
+        config={
+            "model": model_conf.__dict__,
+            "training": train_conf.__dict__,
+            "torch": torch_config.__dict__,
+        }
+    )
+
 mk_data_loader = partial(
     DataLoaderLite,
     train_conf.micro_batch_size,
@@ -205,6 +216,15 @@ for step in range(train_conf.n_training_steps):
     lr = scheduler.get_last_lr()
     master_print(f"step {step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
+    if torch_config.is_master_process:
+        wandb.log({
+            "train/loss": step_stats['loss'].item(),
+            "train/loss_norm": step_stats['loss_norm'].item(),
+            "train/lr": lr[0],
+            "train/tokens_per_sec": tokens_per_sec,
+            "train/step_time_ms": step_dt_ms,
+            "step": step,
+        })
     # checkpoints
     in_checkpoint_step = step > 0 and (step % train_conf.save_checkpoint_freq == 0 or step == train_conf.n_training_steps - 1)
     if torch_config.is_master_process and in_checkpoint_step:
