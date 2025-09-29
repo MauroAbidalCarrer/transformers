@@ -1,3 +1,4 @@
+View the raw version to see the things done.
 <!-- 1. use tiktoken. -->
 <!-- 1. use a proper TensorDataset and Dataloader. -->
 <!-- 1. Use config instead of huge method declarations. -->
@@ -18,7 +19,7 @@
 <!-- 1. use fineWeb-EDU. -->
 <!-- 1. Implement validation steps -->
 <!-- 1. Implement HellaSwag evaluation -->
-1. Fix data loader
-1. Use FP8?
 <!-- 1. Use Wandb -->
 1. Implement generation debug step
+1. Fix data loader
+1. Use FP8?
