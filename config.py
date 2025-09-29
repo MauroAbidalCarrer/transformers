@@ -42,15 +42,14 @@ class TrainingConfig:
         self.grad_accum_step = self.tokens_per_step // self.tokens_per_micro_step
         self.min_lr = self.max_lr / 10
 
-@dataclass
 class TorchConfig:
-    ddp_rank = int(os.environ.get("RANK", -1))
-    using_ddp = ddp_rank != -1
-    ddp_rank = ddp_rank if using_ddp else 0
-    ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
-
     def __init__(self):
+        self.ddp_rank = int(os.environ.get("RANK", -1))
+        self.using_ddp = self.ddp_rank != -1
+        self.ddp_rank = self.ddp_rank if self.using_ddp else 0
+        self.ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        self.ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
+
         self.is_master_process = (self.ddp_local_rank == 0)
         self.device = torch.device(f"cuda:{self.ddp_local_rank}")
         self.device_type = self.device.type    
