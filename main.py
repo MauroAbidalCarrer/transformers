@@ -105,7 +105,7 @@ def hella_swag_eval(model: nn.Module, torch_config: TorchConfig):
         num_correct_norm = num_correct_norm.item()
     acc_norm = num_correct_norm / num_total
     time_to_eval_ms = (time() - eval_start_time) * 1000
-    master_print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}, time to eval: {time_to_eval_ms:4.f}ms")
+    master_print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}, time to eval: {time_to_eval_ms:4.0f}ms")
 
 
 def training_step(
@@ -194,7 +194,8 @@ for step in range(train_conf.n_training_steps):
     if step % train_conf.validation_freq == 0:
         validation_step(model, val_data_loader, torch_config)
     # hella swag eval
-    hella_swag_eval(model, torch_config)
+    if step % train_conf.hella_swag_eval_freq == 0:
+        hella_swag_eval(model, torch_config)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
     # logging
