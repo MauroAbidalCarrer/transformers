@@ -1,5 +1,5 @@
 # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
-#OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
+# OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
 import os
 from time import time
 from contextlib import nullcontext
@@ -24,7 +24,7 @@ from data_utils import DataLoaderLite
 from optimization_utils import mk_scheduler, mk_optimizer
 
 
-ddp_rank = os.environ.get("RANK", -1)
+ddp_rank = int(os.environ.get("RANK", -1))
 using_ddp = ddp_rank != -1
 ddp_rank = ddp_rank if using_ddp else 0
 
@@ -65,9 +65,8 @@ data_loader = DataLoaderLite(
     "train",
     is_master_process,
 )
-
 torch.set_float32_matmul_precision('high')
-model = torch.compile(GPT(model_conf).to(device))
+model = raw_model = torch.compile(GPT(model_conf).to(device))
 param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
 if using_ddp:
@@ -112,6 +111,26 @@ for step in range(train_conf.n_training_steps):
     lr = scheduler.get_last_lr()
     master_print(f"step {step:4d} | batch loss {batch_loss:5.3f} | batch loss norm {norm:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokjens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
+    # checkpoints
+    if is_master_process:
+        if step > 0 and (step % 100 == 0 or step == train_conf.n_training_steps - 1):
+            os.makedirs("checkpoints", exist_ok=True)
+            # optionally write model checkpoints
+            checkpoint_path = os.path.join("checkpoints", f"model_{step:05d}.pt")
+            checkpoint = {
+                "model": raw_model.state_dict(),
+                "config": raw_model.config,
+                "step": step,
+                "val_loss": batch_loss.item(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                # rng states (optional but useful if you want full reproducibility)
+                "rng_state": torch.get_rng_state(),
+                "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            }
+            # you might also want to add optimizer.state_dict() and
+            # rng seeds etc., if you wanted to more exactly resume training
+            torch.save(checkpoint, checkpoint_path)
 
     
 model_state = model.state_dict()
