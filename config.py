@@ -1,5 +1,7 @@
+import os
 from dataclasses import dataclass
 
+import torch
 import tiktoken
 
 
@@ -17,7 +19,7 @@ class GPTConfig:
 class TrainingConfig:
     # number of batches computed in parallel on the GPU
     # Set it to the maximum batch size the GPU can hold
-    micro_batch_size = 64
+    micro_batch_size = 4
     # Number of tokens to process before performing backward step
     # 2**19 = ~0.5M of tokens per batch
     tokens_per_step = 2**19 
@@ -36,3 +38,17 @@ class TrainingConfig:
         assert self.tokens_per_step % self.tokens_per_micro_step == 0, "sequences per batch should be dividable by tokens per batch"
         self.grad_accum_step = self.tokens_per_step // self.tokens_per_micro_step
         self.min_lr = self.max_lr / 10
+
+@dataclass
+class TorchConfig:
+    ddp_rank = int(os.environ.get("RANK", -1))
+    using_ddp = ddp_rank != -1
+    ddp_rank = ddp_rank if using_ddp else 0
+    
+    ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+    def __init__(self):
+        self.is_master_process = (self.ddp_local_rank == 0)
+        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+    
