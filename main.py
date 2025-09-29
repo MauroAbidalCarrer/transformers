@@ -26,6 +26,7 @@ from optimization_utils import mk_scheduler, mk_optimizer
 
 ddp_rank = os.environ.get("RANK", -1)
 using_ddp = ddp_rank != -1
+ddp_rank = ddp_rank if using_ddp else 0
 
 if using_ddp:
     init_process_group(backend="nccl")
