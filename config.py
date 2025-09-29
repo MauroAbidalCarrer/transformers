@@ -19,7 +19,7 @@ class GPTConfig:
 class TrainingConfig:
     # number of batches computed in parallel on the GPU
     # Set it to the maximum batch size the GPU can hold
-    micro_batch_size = 64
+    micro_batch_size = 4
     # Number of tokens to process before performing backward step
     # 2**19 = ~0.5M of tokens per batch
     tokens_per_step = 2**19 
@@ -48,7 +48,7 @@ class TorchConfig:
     ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
     ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
 
-    def __post__init__(self):
+    def __init__(self):
         self.is_master_process = (self.ddp_local_rank == 0)
         self.device = torch.device(f"cuda:{self.ddp_local_rank}")
     
