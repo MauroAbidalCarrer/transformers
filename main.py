@@ -77,6 +77,7 @@ def get_most_likely_row(tokens, mask, logits):
     return pred_norm
 
 def hella_swag_eval(model: nn.Module, torch_config: TorchConfig):
+    eval_start_time = time()
     num_correct_norm = 0
     num_total = 0
     for i, example in enumerate(iterate_examples("val")):
@@ -103,8 +104,8 @@ def hella_swag_eval(model: nn.Module, torch_config: TorchConfig):
         num_total = num_total.item()
         num_correct_norm = num_correct_norm.item()
     acc_norm = num_correct_norm / num_total
-    if torch_config.is_master_process:
-        print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
+    time_to_eval_ms = (time() - eval_start_time) * 1000
+    master_print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}, time to eval: {time_to_eval_ms:4.f}ms")
 
 
 def training_step(
