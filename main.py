@@ -52,11 +52,8 @@ def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: T
                 y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / val_loss_steps
             val_loss_accum += micro_batch_loss.detach()
-        master_print("micro validation steps done")
     if torch_conf.using_ddp:
-        master_print("reducing loss")
         dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
-        master_print("loss reducing done")
 
     master_print(f"validation loss: {val_loss_accum.item():.4f}")
 
@@ -142,7 +139,7 @@ scheduler = mk_scheduler(optimizer, train_conf)
 last_step_time = time()
 for step in range(train_conf.n_training_steps):    
     # validation loss
-    if torch_config.is_master_process and step % train_conf.validation_freq == 0:
+    if step % train_conf.validation_freq == 0:
         validation_step(model, val_data_loader, torch_config)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
