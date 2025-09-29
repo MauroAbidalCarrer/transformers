@@ -57,6 +57,8 @@ def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: T
     if torch_conf.using_ddp:
         dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
     master_print(f"validation loss: {val_loss_accum.item():.4f}")
+    if torch_conf.is_master_process:
+            wandb.log({"val/loss": val_loss_accum, "step": step})
 
 def get_most_likely_row(tokens, mask, logits):
     # evaluate the autoregressive loss at all positions
@@ -107,7 +109,8 @@ def hella_swag_eval(model: nn.Module, torch_config: TorchConfig):
     acc_norm = num_correct_norm / num_total
     time_to_eval_ms = (time() - eval_start_time) * 1000
     master_print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}, time to eval: {time_to_eval_ms:4.0f}ms")
-
+    if torch_config.is_master_process:
+        wandb.log({"eval/hellaswag_acc": acc_norm, "step": step})
 
 def training_step(
         model: nn.Module,
@@ -223,7 +226,6 @@ for step in range(train_conf.n_training_steps):
             "train/lr": lr[0],
             "train/tokens_per_sec": tokens_per_sec,
             "train/step_time_ms": step_dt_ms,
-            "step": step,
         })
     # checkpoints
     in_checkpoint_step = step > 0 and (step % train_conf.save_checkpoint_freq == 0 or step == train_conf.n_training_steps - 1)
