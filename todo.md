@@ -14,5 +14,7 @@
 <!-- 1. Use a learning rate scheduler. -->
 <!-- 1. Better handling of optimizer hyperparameters. -->
 <!-- 1. Use DDP. -->
-1. Refacto data loader
-1. use fineWeb-EDU.
+<!-- 1. Refacto data loader -->
+<!-- 1. use fineWeb-EDU. -->
+1. Use Wandb
+1. Implement 
