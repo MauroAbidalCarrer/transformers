@@ -6,7 +6,6 @@ from contextlib import nullcontext
 import torch
 import tiktoken
 from torch import nn
-from torch import Tensor
 import torch.distributed as dist
 from torch.optim import Optimizer
 from torch.nn import functional as F
@@ -59,7 +58,7 @@ def training_step(
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
             micro_batch_loss.backward()
             # Use detach instead of item because we may need to call dist all reduce on it
-        batch_loss += micro_batch_loss.detach() 
+        batch_loss += micro_batch_loss.detach()
     if torch_config.using_ddp:
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -72,17 +71,24 @@ def training_step(
         "loss_norm": loss_norm,
     }
 
-
-def eval_model(model: nn.Module, x: Tensor, y_true: Tensor) -> dict[str, float]:
-    model = model.eval()
-    with torch.no_grad(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
-        y_pred = model(x) # (batch size, window size, n embeding dims)
-        y_pred = y_pred.reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size) # (batch size * window size, n embeding dims)
-        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
-        return {
-            "loss": F.cross_entropy(y_pred, y_true).cpu().item(),
-            "accuracy": (torch.argmax(y_pred, dim=1) == y_true).float().mean().cpu().item(),
-        }
+def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRScheduler):
+    os.makedirs("checkpoints", exist_ok=True)
+    # optionally write model checkpoints
+    checkpoint_path = os.path.join("checkpoints", f"model_{step:05d}.pt")
+    checkpoint = {
+        "model": raw_model.state_dict(),
+        "config": raw_model.config,
+        "step": step,
+        "val_loss": step_stats['loss'].item(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        # rng states (optional but useful if you want full reproducibility)
+        "rng_state": torch.get_rng_state(),
+        "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+    # you might also want to add optimizer.state_dict() and
+    # rng seeds etc., if you wanted to more exactly resume training
+    torch.save(checkpoint, checkpoint_path)
 
 torch_config = TorchConfig()
 setup_torch(torch_config)
@@ -118,27 +124,10 @@ for step in range(train_conf.n_training_steps):
     master_print(f"step {step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
     # checkpoints
-    if torch_config.is_master_process:
-        if step > 0 and (step % 100 == 0 or step == train_conf.n_training_steps - 1):
-            os.makedirs("checkpoints", exist_ok=True)
-            # optionally write model checkpoints
-            checkpoint_path = os.path.join("checkpoints", f"model_{step:05d}.pt")
-            checkpoint = {
-                "model": raw_model.state_dict(),
-                "config": raw_model.config,
-                "step": step,
-                "val_loss": batch_loss.item(),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
-                # rng states (optional but useful if you want full reproducibility)
-                "rng_state": torch.get_rng_state(),
-                "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
-            }
-            # you might also want to add optimizer.state_dict() and
-            # rng seeds etc., if you wanted to more exactly resume training
-            torch.save(checkpoint, checkpoint_path)
+    in_checkpoint_step = step > 0 and (step % train_conf.save_checkpoint_freq == 0 or step == train_conf.n_training_steps - 1)
+    if torch_config.is_master_process and in_checkpoint_step:
+        save_checkpoint(raw_model, optimizer, scheduler)
 
-    
 model_state = model.state_dict()
 torch.save(model_state, "latest_model_params.pth")
 # generate from the model
