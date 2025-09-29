@@ -31,6 +31,8 @@ class TrainingConfig:
     weight_decay = 0.1
     betas = (0.9, 0.95)
     eps = 1e-8
+    save_checkpoint_freq = 2
+    validation_freq = 100
 
     def __init__(self, model_config: GPTConfig, n_gpus=0):
         self.seq_len = model_config.attention_window_size
@@ -44,11 +46,10 @@ class TorchConfig:
     ddp_rank = int(os.environ.get("RANK", -1))
     using_ddp = ddp_rank != -1
     ddp_rank = ddp_rank if using_ddp else 0
-    
     ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
     ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
 
     def __init__(self):
         self.is_master_process = (self.ddp_local_rank == 0)
         self.device = torch.device(f"cuda:{self.ddp_local_rank}")
-    
+        self.device_type = self.device.type    
