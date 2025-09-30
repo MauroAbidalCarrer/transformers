@@ -59,11 +59,11 @@ class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.config = config
-        self.token_embedding = nn.Embedding(config.vocab_size, config.n_embed_dim)
+        self.token_embedding = nn.Embedding(config.model_vocab_size, config.n_embed_dim)
         self.positional_embedding = nn.Embedding(config.attention_window_size, config.n_embed_dim)
         mk_t_block = partial(TransformerBlock, config)
         self.transformer_blocks = nn.Sequential(*[mk_t_block() for _ in range(config.n_transformer_blocks)])
-        self.un_embedding_layer = nn.Linear(config.n_embed_dim, config.vocab_size, bias=False)
+        self.un_embedding_layer = nn.Linear(config.n_embed_dim, config.model_vocab_size, bias=False)
         self.un_embedding_layer.weight = self.token_embedding.weight
         self.apply(self._init_weights)
 

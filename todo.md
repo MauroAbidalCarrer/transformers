@@ -20,6 +20,7 @@ View the raw version to see the things done.
 <!-- 1. Implement validation steps -->
 <!-- 1. Implement HellaSwag evaluation -->
 <!-- 1. Use Wandb -->
-1. Implement generation debug step
+<!-- 1. Implement generation text generation and it as a validation step during training -->
+1. Verify that we can restart training from checkpoint
 1. Fix data loader
 1. Use FP8?

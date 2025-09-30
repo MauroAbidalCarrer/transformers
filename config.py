@@ -10,7 +10,8 @@ ENCODING_NAME = "gpt2"
 @dataclass
 class GPTConfig:
     attention_window_size: int = 1024 
-    vocab_size: int = tiktoken.get_encoding(ENCODING_NAME).max_token_value + 1
+    model_vocab_size: int = tiktoken.get_encoding(ENCODING_NAME).max_token_value + 1
+    tokenizer_vocab_size: int = tiktoken.get_encoding(ENCODING_NAME).max_token_value + 1
     n_transformer_blocks: int = 12 
     n_heads: int = 12 
     n_embed_dim: int = 768
@@ -34,6 +35,7 @@ class TrainingConfig:
     save_checkpoint_freq = 2
     validation_freq = 100
     hella_swag_eval_freq = 300
+    text_gen_freq = 300
 
     def __init__(self, model_config: GPTConfig, n_gpus=0):
         self.seq_len = model_config.attention_window_size
