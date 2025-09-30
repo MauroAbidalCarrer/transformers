@@ -26,7 +26,7 @@ from config import (
 from model import GPT
 from data_utils import DataLoaderLite
 from hella_swag import iterate_examples, render_example
-from optimization_utils import mk_optimizer, WarmupCosineScheduler
+from optimization_utils import mk_optimizer
 
 
 def setup_torch(torch_config: TorchConfig):
@@ -153,7 +153,7 @@ def training_step(
         "loss_norm": loss_norm,
     }
 
-def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRScheduler, train_conf: TrainingConfig, last_train_step_stats: dict):
+def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, train_conf: TrainingConfig, last_train_step_stats: dict):
     os.makedirs("checkpoints", exist_ok=True)
     # optionally write model checkpoints
     checkpoint_path = os.path.join("checkpoints", f"model_{train_conf.step:05d}.pt")
@@ -307,7 +307,8 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps):
     step_dt_ms = (current_time - last_step_time) * 1000
     tokens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)
     # lr = scheduler.get_last_lr()
-    master_print(f"step {train_conf.step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
+    lr = get_lr(train_conf.step)
+    master_print(f"step {train_conf.step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
     if torch_config.is_master_process and train_conf.use_wandb:
         wandb.log({
