@@ -53,7 +53,7 @@ def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: T
             x, y_true = x.to(torch_conf.device), y_true.to(torch_conf.device)
             y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
             with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
-                y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
+                y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.model_vocab_size)
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / val_loss_steps
             val_loss_accum += micro_batch_loss.detach()
     if torch_conf.using_ddp:
@@ -132,7 +132,7 @@ def training_step(
         use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
         sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
         with sync_ctx(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
-            y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.vocab_size)
+            y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.model_vocab_size)
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
             micro_batch_loss.backward()
             # Use detach instead of item because we may need to call dist all reduce on it
@@ -168,9 +168,9 @@ def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRSch
     # rng seeds etc., if you wanted to more exactly resume training
     torch.save(checkpoint, checkpoint_path)
 
-def generate_text(model: nn.Module, tokenizer, torch_conf: TorchConfig) -> Tensor:
+def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig) -> Tensor:
     generation_time_start = time()
-    model.eval()
+    raw_model.eval()
     num_return_sequences = 4
     max_length = 32
     tokens = tokenizer.encode("Hello, I'm a language model,")
@@ -183,9 +183,9 @@ def generate_text(model: nn.Module, tokenizer, torch_conf: TorchConfig) -> Tenso
         # forward the model to get the logits
         with torch.no_grad():
             with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
-                logits = model(xgen) # (B, T, vocab_size)
+                logits = raw_model(xgen) # (B, T, vocab_size)
             # take the logits at the last position
-            logits = logits[:, -1, :] # (B, vocab_size)
+            logits = logits[:, -1, :raw_model.config.tokenizer_vocab_size] # (B, vocab_size)
             # get the probabilities
             probs = F.softmax(logits, dim=-1)
             # do top-k sampling of 50 (huggingface pipeline default)
@@ -214,7 +214,10 @@ use_wandb = not args.no_wandb
 # setup
 torch_config = TorchConfig()
 setup_torch(torch_config)
-model_conf = GPTConfig(vocab_size=50304)
+model_conf = GPTConfig(
+    model_vocab_size=50304,
+    tokenizer_vocab_size=tiktoken.get_encoding(ENCODING_NAME).max_token_value + 1
+)
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
 if torch_config.is_master_process and use_wandb:
     wandb.init(
@@ -248,13 +251,15 @@ tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 # Training loop
 last_step_time = time()
 for step in range(train_conf.n_training_steps):    
+    is_last_step = step == train_conf.n_training_steps - 1
     # Generate text
-    generate_text(model, tokenizer, torch_config)
+    if is_last_step or step % train_conf.text_gen_freq == 0:
+        generate_text(raw_model, tokenizer, torch_config)
     # validation loss
-    if step % train_conf.validation_freq == 0:
+    if is_last_step or step % train_conf.validation_freq == 0:
         validation_step(model, val_data_loader, torch_config)
     # hella swag eval
-    if step % train_conf.hella_swag_eval_freq == 0:
+    if is_last_step or step % train_conf.hella_swag_eval_freq == 0:
         hella_swag_eval(model, torch_config)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
@@ -284,7 +289,6 @@ torch.save(model_state, "latest_model_params.pth")
 context = torch.zeros((1, 1), dtype=torch.long, device=torch_config.device)
 
 generate_text(model, tokenizer, torch_config)
-# master_print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
 
 if torch_config.using_ddp:
     destroy_process_group()
