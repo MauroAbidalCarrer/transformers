@@ -1,6 +1,5 @@
 # OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
 import os
-import argparse
 from time import time
 from functools import partial
 from contextlib import nullcontext
@@ -42,7 +41,7 @@ def master_print(*args, **kwargs):
         print(*args, **kwargs)
 
 @torch.no_grad()
-def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: TorchConfig, step: int) -> dict:
+def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: TorchConfig, train_conf: TrainingConfig) -> dict:
     model.eval()
     data_loader.reset()
     with torch.no_grad():
@@ -59,8 +58,8 @@ def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: T
     if torch_conf.using_ddp:
         dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
     master_print(f"validation loss: {val_loss_accum.item():.4f}")
-    if torch_conf.is_master_process and use_wandb:
-        wandb.log({"val/loss": val_loss_accum, "step": step})
+    if torch_conf.is_master_process and train_conf.use_wandb:
+        wandb.log({"val/loss": val_loss_accum, "step": train_conf.step})
 
 def get_most_likely_row(tokens, mask, logits):
     # evaluate the autoregressive loss at all positions
@@ -81,7 +80,7 @@ def get_most_likely_row(tokens, mask, logits):
     pred_norm = avg_loss.argmin().item()
     return pred_norm
 
-def hella_swag_eval(model: nn.Module, torch_config: TorchConfig, step: int):
+def hella_swag_eval(model: nn.Module, torch_config: TorchConfig, train_conf: TrainingConfig):
     eval_start_time = time()
     num_correct_norm = 0
     num_total = 0
@@ -111,8 +110,8 @@ def hella_swag_eval(model: nn.Module, torch_config: TorchConfig, step: int):
     acc_norm = num_correct_norm / num_total
     time_to_eval_ms = (time() - eval_start_time) * 1000
     master_print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}, time to eval: {time_to_eval_ms:4.0f}ms")
-    if torch_config.is_master_process and use_wandb:
-        wandb.log({"eval/hellaswag_acc": acc_norm, "step": step})
+    if torch_config.is_master_process and train_conf.use_wandb:
+        wandb.log({"eval/hellaswag_acc": acc_norm, "step": train_conf.step})
 
 def training_step(
         model: nn.Module,
@@ -149,14 +148,14 @@ def training_step(
         "loss_norm": loss_norm,
     }
 
-def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRScheduler):
+def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRScheduler, train_conf: TrainingConfig):
     os.makedirs("checkpoints", exist_ok=True)
     # optionally write model checkpoints
     checkpoint_path = os.path.join("checkpoints", f"model_{step:05d}.pt")
     checkpoint = {
         "model": raw_model.state_dict(),
         "config": raw_model.config,
-        "step": step,
+        "step": train_conf.step,
         "val_loss": step_stats['loss'].item(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
@@ -168,7 +167,7 @@ def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRSch
     # rng seeds etc., if you wanted to more exactly resume training
     torch.save(checkpoint, checkpoint_path)
 
-def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig, step: int) -> Tensor:
+def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig, train_conf: TrainingConfig) -> Tensor:
     raw_model.eval()
     num_return_sequences = 4
     max_length = 32
@@ -204,18 +203,12 @@ def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig, step: int)
         decoded = tokenizer.decode(tokens)
         generations.append(decoded)
         print(f"rank {torch_conf.ddp_rank} sample {i}: {decoded}")
-    if use_wandb and torch_conf.is_master_process:
+    if train_conf.use_wandb and torch_conf.is_master_process:
         table = wandb.Table(columns=["sample_id", "text"])
         for i, gen in enumerate(generations):
             table.add_data(i, gen)
-        wandb.log({"generated_text": table}, step=step)
+        wandb.log({"generated_text": table}, step=train_conf.step)
 
-
-# Arguments parsing
-parser = argparse.ArgumentParser()
-parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases tracking")
-args = parser.parse_args()
-use_wandb = not args.no_wandb
 # setup
 torch_config = TorchConfig()
 setup_torch(torch_config)
@@ -224,9 +217,9 @@ model_conf = GPTConfig(
     tokenizer_vocab_size=tiktoken.get_encoding(ENCODING_NAME).max_token_value + 1
 )
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
-if torch_config.is_master_process and use_wandb:
+if torch_config.is_master_process and train_conf.use_wandb:
     wandb.init(
-        project="gpt-training",   # give your project a name
+        project="gpt-training",
         config={
             "model": model_conf.__dict__,
             "training": train_conf.__dict__,
@@ -255,17 +248,18 @@ scheduler = mk_scheduler(optimizer, train_conf)
 tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 # Training loop
 last_step_time = time()
-for step in range(train_conf.n_training_steps):    
-    is_last_step = step == train_conf.n_training_steps - 1
+for _step in range(train_conf.starting_step, train_conf.n_training_steps):    
+    train_conf.step = _step
+    is_last_step = train_conf.step == train_conf.n_training_steps - 1
     # Generate text
-    if is_last_step or step % train_conf.text_gen_freq == 0:
-        generate_text(raw_model, tokenizer, torch_config, step)
+    if is_last_step or train_conf.step % train_conf.text_gen_freq == 0:
+        generate_text(raw_model, tokenizer, torch_config, train_conf)
     # validation loss
-    if is_last_step or step % train_conf.validation_freq == 0:
-        validation_step(model, val_data_loader, torch_config, step)
+    if is_last_step or train_conf.step % train_conf.validation_freq == 0:
+        validation_step(model, val_data_loader, torch_config, train_conf)
     # hella swag eval
-    if is_last_step or step % train_conf.hella_swag_eval_freq == 0:
-        hella_swag_eval(model, torch_config, step)
+    if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
+        hella_swag_eval(model, torch_config, train_conf)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
     # logging
@@ -273,9 +267,9 @@ for step in range(train_conf.n_training_steps):
     step_dt_ms = (current_time - last_step_time) * 1000
     tokens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)
     lr = scheduler.get_last_lr()
-    master_print(f"step {step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
+    master_print(f"step {train_conf.step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
-    if torch_config.is_master_process and use_wandb:
+    if torch_config.is_master_process and train_conf.use_wandb:
         wandb.log({
             "train/loss": step_stats['loss'].item(),
             "train/loss_norm": step_stats['loss_norm'].item(),
@@ -284,9 +278,9 @@ for step in range(train_conf.n_training_steps):
             "train/step_time_ms": step_dt_ms,
         })
     # checkpoints
-    in_checkpoint_step = step > 0 and (step % train_conf.save_checkpoint_freq == 0 or step == train_conf.n_training_steps - 1)
+    in_checkpoint_step = train_conf.step > 0 and (train_conf.step % train_conf.save_checkpoint_freq == 0 or train_conf.step == train_conf.n_training_steps - 1)
     if torch_config.is_master_process and in_checkpoint_step:
-        save_checkpoint(raw_model, optimizer, scheduler)
+        save_checkpoint(raw_model, optimizer, scheduler, train_conf)
 
 model_state = model.state_dict()
 torch.save(model_state, "latest_model_params.pth")
