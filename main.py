@@ -42,7 +42,7 @@ def master_print(*args, **kwargs):
         print(*args, **kwargs)
 
 @torch.no_grad()
-def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: TorchConfig) -> dict:
+def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: TorchConfig, step: int) -> dict:
     model.eval()
     data_loader.reset()
     with torch.no_grad():
@@ -81,7 +81,7 @@ def get_most_likely_row(tokens, mask, logits):
     pred_norm = avg_loss.argmin().item()
     return pred_norm
 
-def hella_swag_eval(model: nn.Module, torch_config: TorchConfig):
+def hella_swag_eval(model: nn.Module, torch_config: TorchConfig, step: int):
     eval_start_time = time()
     num_correct_norm = 0
     num_total = 0
@@ -168,8 +168,7 @@ def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRSch
     # rng seeds etc., if you wanted to more exactly resume training
     torch.save(checkpoint, checkpoint_path)
 
-def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig) -> Tensor:
-    generation_time_start = time()
+def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig, step: int) -> Tensor:
     raw_model.eval()
     num_return_sequences = 4
     max_length = 32
@@ -199,12 +198,18 @@ def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig) -> Tensor:
             # append to the sequence
             xgen = torch.cat((xgen, xcol), dim=1)
     # print the generated text
+    generations = []
     for i in range(num_return_sequences):
         tokens = xgen[i, :max_length].tolist()
         decoded = tokenizer.decode(tokens)
+        generations.append(decoded)
         print(f"rank {torch_conf.ddp_rank} sample {i}: {decoded}")
-    time_to_generate_ms = (time() - generation_time_start) * 1000
-    print(f"time_to_generate_ms: {time_to_generate_ms:.0f}ms")
+    if use_wandb and torch_conf.is_master_process:
+        table = wandb.Table(columns=["sample_id", "text"])
+        for i, gen in enumerate(generations):
+            table.add_data(i, gen)
+        wandb.log({"generated_text": table}, step=step)
+
 
 # Arguments parsing
 parser = argparse.ArgumentParser()
@@ -254,13 +259,13 @@ for step in range(train_conf.n_training_steps):
     is_last_step = step == train_conf.n_training_steps - 1
     # Generate text
     if is_last_step or step % train_conf.text_gen_freq == 0:
-        generate_text(raw_model, tokenizer, torch_config)
+        generate_text(raw_model, tokenizer, torch_config, step)
     # validation loss
     if is_last_step or step % train_conf.validation_freq == 0:
-        validation_step(model, val_data_loader, torch_config)
+        validation_step(model, val_data_loader, torch_config, step)
     # hella swag eval
     if is_last_step or step % train_conf.hella_swag_eval_freq == 0:
-        hella_swag_eval(model, torch_config)
+        hella_swag_eval(model, torch_config, step)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
     # logging
