@@ -28,6 +28,7 @@ class TrainingConfig:
     micro_batch_size: int = field(default=64)
     tokens_per_step: int = field(default=2**19)  # ~0.5M tokens
     n_training_steps: int = field(default=19000)
+    cycle_duration: int = field(default=400)
     train_test_split_ratio: float = field(default=0.1)
     log_interval: int = field(default=500)
     max_lr: float = field(default=6e-4)
