@@ -148,15 +148,15 @@ def training_step(
         "loss_norm": loss_norm,
     }
 
-def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRScheduler, train_conf: TrainingConfig):
+def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRScheduler, train_conf: TrainingConfig, last_train_step_stats: dict):
     os.makedirs("checkpoints", exist_ok=True)
     # optionally write model checkpoints
-    checkpoint_path = os.path.join("checkpoints", f"model_{step:05d}.pt")
+    checkpoint_path = os.path.join("checkpoints", f"model_{train_conf.step:05d}.pt")
     checkpoint = {
         "model": raw_model.state_dict(),
-        "config": raw_model.config,
+        "model_config": raw_model.config,
         "step": train_conf.step,
-        "val_loss": step_stats['loss'].item(),
+        "last_train_loss": last_train_step_stats['loss'].item(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         # rng states (optional but useful if you want full reproducibility)
@@ -166,6 +166,7 @@ def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRSch
     # you might also want to add optimizer.state_dict() and
     # rng seeds etc., if you wanted to more exactly resume training
     torch.save(checkpoint, checkpoint_path)
+    master_print("Saved step", train_conf.step, "checkpoint.")
 
 def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig, train_conf: TrainingConfig) -> Tensor:
     raw_model.eval()
@@ -217,15 +218,9 @@ model_conf = GPTConfig(
     tokenizer_vocab_size=tiktoken.get_encoding(ENCODING_NAME).max_token_value + 1
 )
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
-if torch_config.is_master_process and train_conf.use_wandb:
-    wandb.init(
-        project="gpt-training",
-        config={
-            "model": model_conf.__dict__,
-            "training": train_conf.__dict__,
-            "torch": torch_config.__dict__,
-        }
-    )
+if train_conf.starting_checkpoint is not None:
+    master_print("starting checkpoint path = ", train_conf.checkpoint_path)
+    model_conf = train_conf.model_config   
 mk_data_loader = partial(
     DataLoaderLite,
     train_conf.micro_batch_size,
@@ -238,14 +233,38 @@ train_data_loader = mk_data_loader("train")
 val_data_loader = mk_data_loader("val")
 torch.set_float32_matmul_precision('high')
 model = raw_model = GPT(model_conf).to(torch_config.device)
+if train_conf.starting_checkpoint is not None:
+    master_print(
+        "starting from checkpoint at step",
+        train_conf.starting_step,
+        "and train loss",
+        train_conf.starting_checkpoint["last_train_loss"]
+    )
+    model.load_state_dict(train_conf.starting_checkpoint["model"])
 # model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
 param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
+
 if torch_config.using_ddp:
     model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
 optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
+if train_conf.starting_checkpoint:
+    optimizer.load_state_dict(train_conf.starting_checkpoint["optimizer"])
+    scheduler.load_state_dict(train_conf.starting_checkpoint["scheduler"])
+    torch.set_rng_state(train_conf.starting_checkpoint["rng_state"])
+    torch.cuda.set_rng_state_all(train_conf.starting_checkpoint["cuda_rng_state"])
+
 tokenizer = tiktoken.get_encoding(ENCODING_NAME)
+if torch_config.is_master_process and train_conf.use_wandb:
+    wandb.init(
+        project="gpt-training",
+        config={
+            "model": model_conf.__dict__,
+            "training": train_conf.__dict__,
+            "torch": torch_config.__dict__,
+        }
+    )
 # Training loop
 last_step_time = time()
 for _step in range(train_conf.starting_step, train_conf.n_training_steps):    
@@ -280,7 +299,7 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps):
     # checkpoints
     in_checkpoint_step = train_conf.step > 0 and (train_conf.step % train_conf.save_checkpoint_freq == 0 or train_conf.step == train_conf.n_training_steps - 1)
     if torch_config.is_master_process and in_checkpoint_step:
-        save_checkpoint(raw_model, optimizer, scheduler, train_conf)
+        save_checkpoint(raw_model, optimizer, scheduler, train_conf, step_stats)
 
 model_state = model.state_dict()
 torch.save(model_state, "latest_model_params.pth")
