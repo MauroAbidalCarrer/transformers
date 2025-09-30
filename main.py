@@ -218,6 +218,7 @@ model_conf = GPTConfig(
     tokenizer_vocab_size=tiktoken.get_encoding(ENCODING_NAME).max_token_value + 1
 )
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
+master_print("gradient accumulation steps:", train_conf.grad_accum_step)
 if train_conf.starting_checkpoint is not None:
     master_print("starting checkpoint path = ", train_conf.checkpoint_path)
     model_conf = train_conf.model_config   

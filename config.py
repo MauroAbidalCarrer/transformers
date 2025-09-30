@@ -25,7 +25,7 @@ class TrainingConfig:
     n_gpus: int = field(default=0, repr=False)
 
     # optional with defaults
-    micro_batch_size: int = field(default=4)
+    micro_batch_size: int = field(default=64)
     tokens_per_step: int = field(default=2**19)  # ~0.5M tokens
     n_training_steps: int = field(default=19000)
     train_test_split_ratio: float = field(default=0.1)
@@ -35,7 +35,7 @@ class TrainingConfig:
     weight_decay: float = field(default=0.1)
     betas: tuple = field(default=(0.9, 0.95))
     eps: float = field(default=1e-8)
-    save_checkpoint_freq: int = field(default=20)
+    save_checkpoint_freq: int = field(default=200)
     validation_freq: int = field(default=100)
     hella_swag_eval_freq: int = field(default=300)
     text_gen_freq: int = field(default=300)
