@@ -1,5 +1,6 @@
 # OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
 import os
+import argparse
 from time import time
 from functools import partial
 from contextlib import nullcontext
@@ -58,8 +59,8 @@ def validation_step(model: nn.Module, data_loader: DataLoaderLite, torch_conf: T
     if torch_conf.using_ddp:
         dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
     master_print(f"validation loss: {val_loss_accum.item():.4f}")
-    if torch_conf.is_master_process:
-            wandb.log({"val/loss": val_loss_accum, "step": step})
+    if torch_conf.is_master_process and use_wandb:
+        wandb.log({"val/loss": val_loss_accum, "step": step})
 
 def get_most_likely_row(tokens, mask, logits):
     # evaluate the autoregressive loss at all positions
@@ -110,7 +111,7 @@ def hella_swag_eval(model: nn.Module, torch_config: TorchConfig):
     acc_norm = num_correct_norm / num_total
     time_to_eval_ms = (time() - eval_start_time) * 1000
     master_print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}, time to eval: {time_to_eval_ms:4.0f}ms")
-    if torch_config.is_master_process:
+    if torch_config.is_master_process and use_wandb:
         wandb.log({"eval/hellaswag_acc": acc_norm, "step": step})
 
 def training_step(
@@ -202,12 +203,17 @@ def generate_text(model: nn.Module, tokenizer, torch_conf: TorchConfig) -> Tenso
         decoded = tokenizer.decode(tokens)
         print(f"rank {torch_conf.ddp_rank} sample {i}: {decoded}")
 
+# Arguments parsing
+parser = argparse.ArgumentParser()
+parser.add_argument("--no-wandb", action="store_true", help="Disable Weights & Biases tracking")
+args = parser.parse_args()
+use_wandb = not args.no_wandb
+# setup
 torch_config = TorchConfig()
 setup_torch(torch_config)
 model_conf = GPTConfig(vocab_size=50304)
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
-
-if torch_config.is_master_process:
+if torch_config.is_master_process and use_wandb:
     wandb.init(
         project="gpt-training",   # give your project a name
         config={
@@ -216,7 +222,6 @@ if torch_config.is_master_process:
             "torch": torch_config.__dict__,
         }
     )
-
 mk_data_loader = partial(
     DataLoaderLite,
     train_conf.micro_batch_size,
@@ -234,10 +239,9 @@ param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
 if torch_config.using_ddp:
     model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
-
 optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
-
+# Training loop
 last_step_time = time()
 for step in range(train_conf.n_training_steps):    
     # validation loss
@@ -255,7 +259,7 @@ for step in range(train_conf.n_training_steps):
     lr = scheduler.get_last_lr()
     master_print(f"step {step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
-    if torch_config.is_master_process:
+    if torch_config.is_master_process and use_wandb:
         wandb.log({
             "train/loss": step_stats['loss'].item(),
             "train/loss_norm": step_stats['loss_norm'].item(),
