@@ -1,5 +1,6 @@
 # OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
 import os
+import math
 from time import time
 from functools import partial
 from contextlib import nullcontext
@@ -25,7 +26,7 @@ from config import (
 from model import GPT
 from data_utils import DataLoaderLite
 from hella_swag import iterate_examples, render_example
-from optimization_utils import mk_scheduler, mk_optimizer
+from optimization_utils import mk_optimizer, WarmupCosineScheduler
 
 
 def setup_torch(torch_config: TorchConfig):
@@ -118,10 +119,14 @@ def training_step(
         data_loader: DataLoaderLite,
         torch_config: TorchConfig,
         optimizer: Optimizer,
-        scheduler: LRScheduler,
+        # scheduler: LRScheduler,
+        train_conf: TrainingConfig,
     ) -> dict:
     model = model.train()
     optimizer.zero_grad()
+    lr = get_lr(train_conf.step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
     batch_loss = 0
     for micro_step in range(train_conf.grad_accum_step):
         x, y_true = data_loader.next_batch()
@@ -140,7 +145,7 @@ def training_step(
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
-    scheduler.step()
+    # scheduler.step()
     if torch_config.device.type == "cuda":
         torch.cuda.synchronize() # wait for the GPU to finish work
     return {
@@ -158,7 +163,7 @@ def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRSch
         "step": train_conf.step,
         "last_train_loss": last_train_step_stats['loss'].item(),
         "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
+        # "scheduler": scheduler.state_dict(),
         # rng states (optional but useful if you want full reproducibility)
         "rng_state": torch.get_rng_state(),
         "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
@@ -249,10 +254,24 @@ master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory u
 if torch_config.using_ddp:
     model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
 optimizer = mk_optimizer(model, train_conf)
-scheduler = mk_scheduler(optimizer, train_conf)
+# scheduler = WarmupCosineScheduler(optimizer, train_conf.n_training_steps, train_conf.n_warmup_steps, train_conf.min_lr)
+def get_lr(it: int):
+    # 1) linear warmup for warmup_iters steps
+    if it < train_conf.n_warmup_steps:
+        return train_conf.max_lr * (it+1) / train_conf.n_warmup_steps
+    # 2) if it > lr_decay_iters, return min learning rate
+    if it > train_conf.n_training_steps:
+        return train_conf.min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - train_conf.n_warmup_steps) / (train_conf.n_training_steps - train_conf.n_warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return train_conf.min_lr + coeff * (train_conf.max_lr - train_conf.min_lr)
+
+# scheduler = mk_scheduler(optimizer, train_conf)
 if train_conf.starting_checkpoint:
     optimizer.load_state_dict(train_conf.starting_checkpoint["optimizer"])
-    scheduler.load_state_dict(train_conf.starting_checkpoint["scheduler"])
+    # scheduler.load_state_dict(train_conf.starting_checkpoint["scheduler"])
     torch.set_rng_state(train_conf.starting_checkpoint["rng_state"])
     torch.cuda.set_rng_state_all(train_conf.starting_checkpoint["cuda_rng_state"])
 
@@ -281,26 +300,28 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps):
     if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
         hella_swag_eval(model, torch_config, train_conf)
     # Training step
-    step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
+    step_stats = training_step(model, train_data_loader, torch_config, optimizer, train_conf)
+    # step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
     # logging
     current_time = time()
     step_dt_ms = (current_time - last_step_time) * 1000
     tokens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)
-    lr = scheduler.get_last_lr()
+    # lr = scheduler.get_last_lr()
     master_print(f"step {train_conf.step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
     if torch_config.is_master_process and train_conf.use_wandb:
         wandb.log({
             "train/loss": step_stats['loss'].item(),
             "train/loss_norm": step_stats['loss_norm'].item(),
-            "train/lr": lr[0],
+            "train/lr": get_lr(train_conf.step),
+            # "train/lr": lr[0],
             "train/tokens_per_sec": tokens_per_sec,
             "train/step_time_ms": step_dt_ms,
         })
     # checkpoints
     in_checkpoint_step = train_conf.step > 0 and (train_conf.step % train_conf.save_checkpoint_freq == 0 or train_conf.step == train_conf.n_training_steps - 1)
     if torch_config.is_master_process and in_checkpoint_step:
-        save_checkpoint(raw_model, optimizer, scheduler, train_conf, step_stats)
+        save_checkpoint(raw_model, optimizer, train_conf, step_stats)
 
 model_state = model.state_dict()
 torch.save(model_state, "latest_model_params.pth")
