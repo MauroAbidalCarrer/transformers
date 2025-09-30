@@ -8,6 +8,7 @@ import wandb
 import torch
 import tiktoken
 from torch import nn
+from torch import Tensor
 import torch.distributed as dist
 from torch.optim import Optimizer
 from torch.nn import functional as F
@@ -166,6 +167,41 @@ def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRSch
     # rng seeds etc., if you wanted to more exactly resume training
     torch.save(checkpoint, checkpoint_path)
 
+def generate_text(model: nn.Module, tokenizer, torch_conf: TorchConfig) -> Tensor:
+    model.eval()
+    num_return_sequences = 4
+    max_length = 32
+    tokens = tokenizer.encode("Hello, I'm a language model,")
+    tokens = torch.tensor(tokens, dtype=torch.long)
+    tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+    xgen = tokens.to(torch_conf.device)
+    sample_rng = torch.Generator(device=torch_conf.device)
+    sample_rng.manual_seed(42 + torch_conf.ddp_rank)
+    while xgen.size(1) < max_length:
+        # forward the model to get the logits
+        with torch.no_grad():
+            with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
+                logits, loss = model(xgen) # (B, T, vocab_size)
+            # take the logits at the last position
+            logits = logits[:, -1, :] # (B, vocab_size)
+            # get the probabilities
+            probs = F.softmax(logits, dim=-1)
+            # do top-k sampling of 50 (huggingface pipeline default)
+            # topk_probs here becomes (5, 50), topk_indices is (5, 50)
+            topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+            # select a token from the top-k probabilities
+            # note: multinomial does not demand the input to sum to 1
+            ix = torch.multinomial(topk_probs, 1, generator=sample_rng) # (B, 1)
+            # gather the corresponding indices
+            xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+            # append to the sequence
+            xgen = torch.cat((xgen, xcol), dim=1)
+    # print the generated text
+    for i in range(num_return_sequences):
+        tokens = xgen[i, :max_length].tolist()
+        decoded = tokenizer.decode(tokens)
+        print(f"rank {torch_conf.ddp_rank} sample {i}: {decoded}")
+
 torch_config = TorchConfig()
 setup_torch(torch_config)
 model_conf = GPTConfig(vocab_size=50304)
@@ -238,7 +274,8 @@ torch.save(model_state, "latest_model_params.pth")
 context = torch.zeros((1, 1), dtype=torch.long, device=torch_config.device)
 
 tokenizer = tiktoken.get_encoding(ENCODING_NAME)
-master_print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
+generate_text(model, tokenizer, torch_config)
+# master_print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
 
 if torch_config.using_ddp:
     destroy_process_group()
