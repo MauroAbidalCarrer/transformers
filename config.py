@@ -34,6 +34,7 @@ class TrainingConfig:
     save_checkpoint_freq = 2
     validation_freq = 100
     hella_swag_eval_freq = 300
+    text_gen_freq = 300
 
     def __init__(self, model_config: GPTConfig, n_gpus=0):
         self.seq_len = model_config.attention_window_size

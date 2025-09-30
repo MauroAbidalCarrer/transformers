@@ -169,6 +169,7 @@ def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRSch
     torch.save(checkpoint, checkpoint_path)
 
 def generate_text(model: nn.Module, tokenizer, torch_conf: TorchConfig) -> Tensor:
+    generation_time_start = time()
     model.eval()
     num_return_sequences = 4
     max_length = 32
@@ -182,7 +183,7 @@ def generate_text(model: nn.Module, tokenizer, torch_conf: TorchConfig) -> Tenso
         # forward the model to get the logits
         with torch.no_grad():
             with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
-                logits, loss = model(xgen) # (B, T, vocab_size)
+                logits = model(xgen) # (B, T, vocab_size)
             # take the logits at the last position
             logits = logits[:, -1, :] # (B, vocab_size)
             # get the probabilities
@@ -202,6 +203,8 @@ def generate_text(model: nn.Module, tokenizer, torch_conf: TorchConfig) -> Tenso
         tokens = xgen[i, :max_length].tolist()
         decoded = tokenizer.decode(tokens)
         print(f"rank {torch_conf.ddp_rank} sample {i}: {decoded}")
+    time_to_generate_ms = (time() - generation_time_start) * 1000
+    print(f"time_to_generate_ms: {time_to_generate_ms:.0f}ms")
 
 # Arguments parsing
 parser = argparse.ArgumentParser()
@@ -241,9 +244,12 @@ if torch_config.using_ddp:
     model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
 optimizer = mk_optimizer(model, train_conf)
 scheduler = mk_scheduler(optimizer, train_conf)
+tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 # Training loop
 last_step_time = time()
 for step in range(train_conf.n_training_steps):    
+    # Generate text
+    generate_text(model, tokenizer, torch_config)
     # validation loss
     if step % train_conf.validation_freq == 0:
         validation_step(model, val_data_loader, torch_config)
@@ -277,7 +283,6 @@ torch.save(model_state, "latest_model_params.pth")
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=torch_config.device)
 
-tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 generate_text(model, tokenizer, torch_config)
 # master_print(tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()))
 
