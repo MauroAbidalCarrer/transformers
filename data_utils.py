@@ -10,7 +10,6 @@ def load_tokens(filename):
     ptt = torch.tensor(npt, dtype=torch.long)
     return ptt
 
-
 class DataLoaderLite:
     def __init__(self, B, T, process_rank, num_processes, split, master_process):
         self.B = B
@@ -50,3 +49,18 @@ class DataLoaderLite:
             self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = B * T * self.process_rank
         return x, y
+
+
+if __name__ == "__main__":
+    data_root = "edu_fineweb10B"
+    shards = os.listdir(data_root)
+    shards = [s for s in shards if "train" in s]
+    shards = sorted(shards)
+    shards = [os.path.join(data_root, s) for s in shards]
+    n_tokens = 0
+    for shard_pth in shards:
+        shard:np.ndarray = np.load(shard_pth)
+        print("shard shape:", shard.shape, "n elements:", shard.size)
+        n_tokens += shard.size
+        
+    print("total n tokens:", n_tokens)
