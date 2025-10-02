@@ -341,7 +341,7 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps):
             # "train/lr": lr[0],
             "train/tokens_per_sec": tokens_per_sec,
             "train/step_time_ms": step_dt_ms,
-            "train/step": train_conf.step,
+            "step": train_conf.step,
         })
     # checkpoints
     in_checkpoint_step = train_conf.step > 0 and (train_conf.step % train_conf.save_checkpoint_freq == 0 or train_conf.step == train_conf.n_training_steps - 1)
