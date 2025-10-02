@@ -130,7 +130,7 @@ def training_step(
         x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
         # sample a batch of data
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
-        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
+        use_no_sync_ctx = (micro_step == (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
         sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
         with sync_ctx(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
             y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.model_vocab_size)
