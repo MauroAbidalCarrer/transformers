@@ -124,9 +124,6 @@ def training_step(
     ) -> dict:
     model = model.train()
     optimizer.zero_grad()
-    lr = get_lr(train_conf.step)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
     batch_loss = 0
     for micro_step in range(train_conf.grad_accum_step):
         x, y_true = data_loader.next_batch()
@@ -144,6 +141,9 @@ def training_step(
     if torch_config.using_ddp:
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    lr = get_lr(train_conf.step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
     optimizer.step()
     # scheduler.step()
     if torch_config.device.type == "cuda":
@@ -296,7 +296,7 @@ if train_conf.starting_checkpoint:
     optimizer.load_state_dict(train_conf.starting_checkpoint["optimizer"])
     # scheduler.load_state_dict(train_conf.starting_checkpoint["scheduler"])
     torch.set_rng_state(train_conf.starting_checkpoint["rng_state"])
-    torch.cuda.set_rng_state_all(train_conf.starting_checkpoint["cuda_rng_state"])
+    # torch.cuda.set_rng_state_all(train_conf.starting_checkpoint["cuda_rng_state"])
 
 tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 if torch_config.is_master_process and train_conf.use_wandb:
@@ -341,6 +341,7 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps):
             # "train/lr": lr[0],
             "train/tokens_per_sec": tokens_per_sec,
             "train/step_time_ms": step_dt_ms,
+            "train/step": train_conf.step,
         })
     # checkpoints
     in_checkpoint_step = train_conf.step > 0 and (train_conf.step % train_conf.save_checkpoint_freq == 0 or train_conf.step == train_conf.n_training_steps - 1)
