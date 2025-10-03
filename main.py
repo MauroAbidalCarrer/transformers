@@ -132,7 +132,7 @@ def training_step(
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
         use_no_sync_ctx = (micro_step == (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
         sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
-        with sync_ctx(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
+        with sync_ctx(): #, torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
             y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.model_vocab_size)
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
             micro_batch_loss.backward()
@@ -317,11 +317,11 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps):
     if is_last_step or train_conf.step % train_conf.text_gen_freq == 0:
         generate_text(raw_model, tokenizer, torch_config, train_conf)
     # validation loss
-    if is_last_step or train_conf.step % train_conf.validation_freq == 0:
-        validation_step(model, val_data_loader, torch_config, train_conf)
+    # if is_last_step or train_conf.step % train_conf.validation_freq == 0:
+    #     validation_step(model, val_data_loader, torch_config, train_conf)
     # hella swag eval
-    if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
-        hella_swag_eval(model, torch_config, train_conf)
+    # if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
+    #     hella_swag_eval(model, torch_config, train_conf)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, train_conf)
     # step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
