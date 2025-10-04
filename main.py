@@ -114,40 +114,78 @@ def hella_swag_eval(model: nn.Module, torch_config: TorchConfig, train_conf: Tra
     if torch_config.is_master_process and train_conf.use_wandb:
         wandb.log({"eval/hellaswag_acc": acc_norm, "step": train_conf.step})
 
+# --- enable bf16 only if device supports it (Ampere or newer) ---
+def _can_use_bfloat16(device: torch.device) -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        # get capability for current device index
+        major, minor = torch.cuda.get_device_capability(device.index)
+    except Exception:
+        major, minor = torch.cuda.get_device_capability()
+    # Ampere (sm_80) and newer support efficient bfloat16
+    return major >= 8
+
+USE_BFLOAT16 = _can_use_bfloat16(torch_config.device)
+master_print("USE_BFLOAT16 autocast:", USE_BFLOAT16)
+# autocast context factory (nullcontext if not available)
+autocast_ctx = partial(torch.autocast, device_type=torch_config.device_type, dtype=torch.bfloat16) if USE_BFLOAT16 else nullcontext
+
 def training_step(
         model: nn.Module,
         data_loader: DataLoaderLite,
         torch_config: TorchConfig,
         optimizer: Optimizer,
-        # scheduler: LRScheduler,
         train_conf: TrainingConfig,
     ) -> dict:
     model = model.train()
     optimizer.zero_grad()
-    batch_loss = 0
+    batch_loss = 0.0
     for micro_step in range(train_conf.grad_accum_step):
         x, y_true = data_loader.next_batch()
         x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
         # sample a batch of data
-        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
-        use_no_sync_ctx = (micro_step == (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
+        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size).long()
+
+        # use no_sync for all micro steps except the last one
+        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
         sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
-        with sync_ctx(): #, torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
-            y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.model_vocab_size)
+
+        with sync_ctx():
+            # forward in autocast if available; but compute loss in float32
+            with autocast_ctx():
+                y_pred = model(x)  # (B, T, vocab)
+            # reshape and ensure logits are float for stable CE
+            y_pred = y_pred.reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.model_vocab_size).float()
+
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
             micro_batch_loss.backward()
-            # Use detach instead of item because we may need to call dist all reduce on it
+
+        # accumulate detached scalar for logging
         batch_loss += micro_batch_loss.detach()
+
+    # average batch_loss across ranks
     if torch_config.using_ddp:
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
+
+    # clip grads (and check if gradient norm is finite)
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    # guard against non-finite grads — don't step if grads are NaN/inf
+    if not math.isfinite(loss_norm):
+        master_print(f"Non-finite grad norm ({loss_norm}); skipping optimizer.step() at step {train_conf.step}")
+        optimizer.zero_grad()
+        return {"loss": batch_loss, "loss_norm": loss_norm}
+
+    # set lr manually if you do that
     lr = get_lr(train_conf.step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
     optimizer.step()
-    # scheduler.step()
+
     if torch_config.device.type == "cuda":
-        torch.cuda.synchronize() # wait for the GPU to finish work
+        torch.cuda.synchronize()  # wait for the GPU to finish work
+
     return {
         "loss": batch_loss,
         "loss_norm": loss_norm,
