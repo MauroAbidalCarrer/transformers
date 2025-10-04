@@ -210,9 +210,9 @@ def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig, train_conf
         generations.append(decoded)
         print(f"rank {torch_conf.ddp_rank} sample {i}: {decoded}")
     if train_conf.use_wandb and torch_conf.is_master_process:
-        table = wandb.Table(columns=["sample_id", "text"])
+        table = wandb.Table(columns=["step", "sample_id", "text"])
         for i, gen in enumerate(generations):
-            table.add_data(i, gen)
+            table.add_data(train_conf.step, i, gen)
         wandb.log({"generated_text": table}, step=train_conf.step)
 
 # setup
