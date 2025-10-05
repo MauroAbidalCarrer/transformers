@@ -125,12 +125,6 @@ def _can_use_bfloat16(device: torch.device) -> bool:
         major, minor = torch.cuda.get_device_capability()
     # Ampere (sm_80) and newer support efficient bfloat16
     return major >= 8
-
-USE_BFLOAT16 = _can_use_bfloat16(torch_config.device)
-master_print("USE_BFLOAT16 autocast:", USE_BFLOAT16)
-# autocast context factory (nullcontext if not available)
-autocast_ctx = partial(torch.autocast, device_type=torch_config.device_type, dtype=torch.bfloat16) if USE_BFLOAT16 else nullcontext
-
 def training_step(
         model: nn.Module,
         data_loader: DataLoaderLite,
@@ -138,53 +132,76 @@ def training_step(
         optimizer: Optimizer,
         train_conf: TrainingConfig,
     ) -> dict:
-    model = model.train()
+    model.train()
     optimizer.zero_grad()
     batch_loss = 0.0
+
     for micro_step in range(train_conf.grad_accum_step):
         x, y_true = data_loader.next_batch()
         x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
-        # sample a batch of data
         y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size).long()
 
-        # use no_sync for all micro steps except the last one
         use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
         sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
 
         with sync_ctx():
-            # forward in autocast if available; but compute loss in float32
             with autocast_ctx():
-                y_pred = model(x)  # (B, T, vocab)
-            # reshape and ensure logits are float for stable CE
-            y_pred = y_pred.reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.model_vocab_size).float()
-
+                y_pred = model(x)
+            y_pred = y_pred.reshape(train_conf.micro_batch_size * model_conf.attention_window_size,
+                                    model_conf.model_vocab_size).float()
             micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
             micro_batch_loss.backward()
 
-        # accumulate detached scalar for logging
         batch_loss += micro_batch_loss.detach()
 
-    # average batch_loss across ranks
+    # Average the loss across all ranks
     if torch_config.using_ddp:
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
-    # clip grads (and check if gradient norm is finite)
+    # --- GRADIENT AND PARAMETER CHECKS ---
+    if torch_config.is_master_process:
+        grad_dtypes = {}
+        non_finite_count = 0
+        for name, p in model.named_parameters():
+            if p.grad is None:
+                continue
+            grad_dtypes.setdefault(p.grad.dtype, 0)
+            grad_dtypes[p.grad.dtype] += 1
+
+            if not torch.isfinite(p.grad).all():
+                non_finite_count += 1
+                master_print(f"[WARN] Non-finite gradients in '{name}'")
+
+            master_print(f"Gradient for '{name}' has dtype {p.grad.dtype}")
+            master_print(f"Parameter '{name}' has dtype {p.dtype}, expected float32")
+
+        if len(grad_dtypes) > 1:
+            master_print(f"[INFO] Gradient dtypes summary: {grad_dtypes}")
+        if non_finite_count > 0:
+            master_print(f"[WARN] Found {non_finite_count} parameters with non-finite gradients")
+
+        # --- check optimizer state dtypes (first param group only) ---
+        for group in optimizer.param_groups:
+            for p in group['params']:
+                if p in optimizer.state:
+                    for key, val in optimizer.state[p].items():
+                        if torch.is_tensor(val) and val.dtype != torch.float32:
+                            master_print(f"[WARN] Optimizer state '{key}' for param '{p.shape}' has dtype {val.dtype}")
+            break  # check only first group for speed
+
+    # Clip gradients and compute their norm
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    # guard against non-finite grads — don't step if grads are NaN/inf
+
+    # Abort step if grads exploded
     if not math.isfinite(loss_norm):
-        master_print(f"Non-finite grad norm ({loss_norm}); skipping optimizer.step() at step {train_conf.step}")
+        master_print(f"[WARN] Non-finite grad norm ({loss_norm}); skipping optimizer.step() at step {train_conf.step}")
         optimizer.zero_grad()
         return {"loss": batch_loss, "loss_norm": loss_norm}
-
-    # set lr manually if you do that
-    lr = get_lr(train_conf.step)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
 
     optimizer.step()
 
     if torch_config.device.type == "cuda":
-        torch.cuda.synchronize()  # wait for the GPU to finish work
+        torch.cuda.synchronize()
 
     return {
         "loss": batch_loss,
@@ -262,6 +279,11 @@ model_conf = GPTConfig(
 )
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
 master_print("gradient accumulation steps:", train_conf.grad_accum_step)
+USE_BFLOAT16 = _can_use_bfloat16(torch_config.device)
+master_print("USE_BFLOAT16 autocast:", USE_BFLOAT16)
+# autocast context factory (nullcontext if not available)
+autocast_ctx = partial(torch.autocast, device_type=torch_config.device_type, dtype=torch.bfloat16) if USE_BFLOAT16 else nullcontext
+
 if train_conf.starting_checkpoint is not None:
     master_print("starting checkpoint path = ", train_conf.checkpoint_path)
     model_conf = train_conf.model_config   
