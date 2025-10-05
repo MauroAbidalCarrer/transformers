@@ -168,7 +168,7 @@ def training_step(
         torch.cuda.synchronize()
 
     return {
-        "loss": loss,
+        "loss": loss_accum,
         "loss_norm": norm,
     }
 
