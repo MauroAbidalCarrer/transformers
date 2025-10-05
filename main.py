@@ -174,10 +174,10 @@ def training_step(
 
             if not torch.isfinite(p.grad).all():
                 non_finite_count += 1
-                master_print(f"[WARN] Non-finite gradients in '{name}'")
+                print(f"rank{torch_config.ddp_rank}: [WARN] Non-finite gradients in '{name}'")
 
-            master_print(f"Gradient for '{name}' has dtype {p.grad.dtype}")
-            master_print(f"Parameter '{name}' has dtype {p.dtype}")
+            print(f"rank{torch_config.ddp_rank}: Gradient for '{name}' has dtype {p.grad.dtype}")
+            print(f"rank{torch_config.ddp_rank}: Parameter '{name}' has dtype {p.dtype}")
 
         # --- check optimizer state dtypes (first param group only) ---
         for group in optimizer.param_groups:
@@ -185,7 +185,7 @@ def training_step(
                 if p in optimizer.state:
                     for key, val in optimizer.state[p].items():
                         if torch.is_tensor(val) and val.dtype != torch.float32:
-                            master_print(f"[WARN] Optimizer state '{key}' for param '{p.shape}' has dtype {val.dtype}")
+                            print(f"rank{torch_config.ddp_rank}: [WARN] Optimizer state '{key}' for param '{p.shape}' has dtype {val.dtype}")
         printed_dtypes = True
 
     # Clip gradients and compute their norm
