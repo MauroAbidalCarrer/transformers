@@ -142,7 +142,7 @@ def training_step(
     for micro_step in range(train_conf.grad_accum_step):
         x, y_true = data_loader.next_batch()
         x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
-        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size).long()
+        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size) #.long()
 
         use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
         sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
@@ -190,7 +190,7 @@ def training_step(
 
     # Clip gradients and compute their norm
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    lr = get_lr(step)
+    lr = get_lr(train_conf.step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
