@@ -149,10 +149,7 @@ def training_step(
 
         with sync_ctx():
             with autocast_ctx():
-                y_pred = model(x)
-            y_pred = y_pred.reshape(train_conf.micro_batch_size * model_conf.attention_window_size,
-                                    model_conf.model_vocab_size).float()
-            micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
+                y_pred, micro_batch_loss = model(x, y_true)
             micro_batch_loss.backward()
 
         batch_loss += micro_batch_loss.detach()
