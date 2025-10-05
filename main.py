@@ -125,6 +125,9 @@ def _can_use_bfloat16(device: torch.device) -> bool:
         major, minor = torch.cuda.get_device_capability()
     # Ampere (sm_80) and newer support efficient bfloat16
     return major >= 8
+
+global printed_dtypes
+printed_dtypes = False
 def training_step(
         model: nn.Module,
         data_loader: DataLoaderLite,
@@ -135,7 +138,7 @@ def training_step(
     model.train()
     optimizer.zero_grad()
     batch_loss = 0.0
-
+    global printed_dtypes
     for micro_step in range(train_conf.grad_accum_step):
         x, y_true = data_loader.next_batch()
         x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
@@ -159,7 +162,8 @@ def training_step(
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
     # --- GRADIENT AND PARAMETER CHECKS ---
-    if torch_config.is_master_process:
+    if torch_config.is_master_process and not printed_dtypes:
+
         grad_dtypes = {}
         non_finite_count = 0
         for name, p in model.named_parameters():
@@ -173,12 +177,7 @@ def training_step(
                 master_print(f"[WARN] Non-finite gradients in '{name}'")
 
             master_print(f"Gradient for '{name}' has dtype {p.grad.dtype}")
-            master_print(f"Parameter '{name}' has dtype {p.dtype}, expected float32")
-
-        if len(grad_dtypes) > 1:
-            master_print(f"[INFO] Gradient dtypes summary: {grad_dtypes}")
-        if non_finite_count > 0:
-            master_print(f"[WARN] Found {non_finite_count} parameters with non-finite gradients")
+            master_print(f"Parameter '{name}' has dtype {p.dtype}")
 
         # --- check optimizer state dtypes (first param group only) ---
         for group in optimizer.param_groups:
@@ -187,7 +186,7 @@ def training_step(
                     for key, val in optimizer.state[p].items():
                         if torch.is_tensor(val) and val.dtype != torch.float32:
                             master_print(f"[WARN] Optimizer state '{key}' for param '{p.shape}' has dtype {val.dtype}")
-            break  # check only first group for speed
+        printed_dtypes = True
 
     # Clip gradients and compute their norm
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
