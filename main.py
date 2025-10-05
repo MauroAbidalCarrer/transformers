@@ -138,19 +138,19 @@ def training_step(
     model.train()
     optimizer.zero_grad()
     loss_accum = 0.0
-    for micro_step in range(train_conf.grad_accum_step):
+    for micro_step in range(train_conf.norm):
         x, y = data_loader.next_batch()
         x, y = x.to(torch_conf.device), y.to(torch_conf.device)
         # added after video, this field is also used by the forward pass.
         if torch_conf.using_ddp:
-            model.require_backward_grad_sync = (micro_step == train_conf.grad_accum_steps - 1)
+            model.require_backward_grad_sync = (micro_step == train_conf.grad_accum_step - 1)
         with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
         # we have to scale the loss to account for gradient accumulation,
         # because the gradients just add on each successive backward().
         # addition of gradients corresponds to a SUM in the objective, but
         # instead of a SUM we want MEAN. Scale the loss here so it comes out right
-        loss = loss / train_conf.grad_accum_steps
+        loss = loss / train_conf.grad_accum_step
         loss_accum += loss.detach()
         loss.backward()
     if torch_conf.using_ddp:
