@@ -222,10 +222,7 @@ class GPT(nn.Module):
         # forward the final layernorm and the classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
-        loss = None
-        # if targets is not None:
-        #     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
-        return logits, loss
+        return logits
 
     def configure_optimizers(self, weight_decay, learning_rate, torch_conf: TorchConfig):
         # start with all of the candidate parameters (that require grad)
