@@ -372,8 +372,8 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps):
     train_conf.step = _step
     is_last_step = train_conf.step == train_conf.n_training_steps - 1
     # Generate text
-    if is_last_step or train_conf.step % train_conf.text_gen_freq == 0:
-        generate_text(raw_model, tokenizer, torch_config, train_conf)
+    # if is_last_step or train_conf.step % train_conf.text_gen_freq == 0:
+    #     generate_text(raw_model, tokenizer, torch_config, train_conf)
     # validation loss
     # if is_last_step or train_conf.step % train_conf.validation_freq == 0:
     #     validation_step(model, val_data_loader, torch_config, train_conf)
