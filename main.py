@@ -138,7 +138,7 @@ def training_step(
     model.train()
     optimizer.zero_grad()
     loss_accum = 0.0
-    for micro_step in range(train_conf.norm):
+    for micro_step in range(train_conf.grad_accum_step):
         x, y = data_loader.next_batch()
         x, y = x.to(torch_conf.device), y.to(torch_conf.device)
         # added after video, this field is also used by the forward pass.
