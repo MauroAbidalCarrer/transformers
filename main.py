@@ -158,33 +158,6 @@ def training_step(
     if torch_config.using_ddp:
         dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
 
-    # --- GRADIENT AND PARAMETER CHECKS ---
-    if torch_config.is_master_process and not printed_dtypes:
-
-        grad_dtypes = {}
-        non_finite_count = 0
-        for name, p in model.named_parameters():
-            if p.grad is None:
-                continue
-            grad_dtypes.setdefault(p.grad.dtype, 0)
-            grad_dtypes[p.grad.dtype] += 1
-
-            if not torch.isfinite(p.grad).all():
-                non_finite_count += 1
-                print(f"rank{torch_config.ddp_rank}: [WARN] Non-finite gradients in '{name}'")
-
-            print(f"rank{torch_config.ddp_rank}: Gradient for '{name}' has dtype {p.grad.dtype}")
-            print(f"rank{torch_config.ddp_rank}: Parameter '{name}' has dtype {p.dtype}")
-
-        # --- check optimizer state dtypes (first param group only) ---
-        for group in optimizer.param_groups:
-            for p in group['params']:
-                if p in optimizer.state:
-                    for key, val in optimizer.state[p].items():
-                        if torch.is_tensor(val) and val.dtype != torch.float32:
-                            print(f"rank{torch_config.ddp_rank}: [WARN] Optimizer state '{key}' for param '{p.shape}' has dtype {val.dtype}")
-        printed_dtypes = True
-
     # Clip gradients and compute their norm
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     lr = get_lr(train_conf.step)
@@ -312,7 +285,8 @@ master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory u
 
 if torch_config.using_ddp:
     model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
-optimizer = mk_optimizer(model, train_conf)
+# optimizer = mk_optimizer(model, train_conf)
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=torch_config.device_typ)
 
 def _get_lr(it: int):
     # 1) linear warmup for warmup_iters steps
