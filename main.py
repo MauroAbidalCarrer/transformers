@@ -131,53 +131,45 @@ printed_dtypes = False
 def training_step(
         model: nn.Module,
         data_loader: DataLoaderLite,
-        torch_config: TorchConfig,
+        torch_conf: TorchConfig,
         optimizer: Optimizer,
         train_conf: TrainingConfig,
     ) -> dict:
     model.train()
     optimizer.zero_grad()
-    batch_loss = 0.0
-    global printed_dtypes
+    loss_accum = 0.0
     for micro_step in range(train_conf.grad_accum_step):
-        x, y_true = data_loader.next_batch()
-        x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
-        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size) #.long()
-
-        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
-        sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
-
-        with sync_ctx():
-            with autocast_ctx():
-                y_pred, micro_batch_loss = model(x, y_true)
-            micro_batch_loss.backward()
-
-        batch_loss += micro_batch_loss.detach()
-
-    # Average the loss across all ranks
-    if torch_config.using_ddp:
-        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-
-    # Clip gradients and compute their norm
-    loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        x, y = data_loader.next_batch()
+        x, y = x.to(torch_conf.device), y.to(torch_conf.device)
+        # added after video, this field is also used by the forward pass.
+        if torch_conf.using_ddp:
+            model.require_backward_grad_sync = (micro_step == train_conf.grad_accum_steps - 1)
+        with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
+            logits, loss = model(x, y)
+        # we have to scale the loss to account for gradient accumulation,
+        # because the gradients just add on each successive backward().
+        # addition of gradients corresponds to a SUM in the objective, but
+        # instead of a SUM we want MEAN. Scale the loss here so it comes out right
+        loss = loss / train_conf.grad_accum_steps
+        loss_accum += loss.detach()
+        loss.backward()
+    if torch_conf.using_ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    # determine and set the learning rate for this iteration
     lr = get_lr(train_conf.step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-
-    # Abort step if grads exploded
-    if not math.isfinite(loss_norm):
-        master_print(f"[WARN] Non-finite grad norm ({loss_norm}); skipping optimizer.step() at step {train_conf.step}")
-        optimizer.zero_grad()
-        return {"loss": batch_loss, "loss_norm": loss_norm}
-
     optimizer.step()
+    if torch_conf.device_type == "cuda":
+        torch.cuda.synchronize() # wait for the GPU to finish work
 
     if torch_config.device.type == "cuda":
         torch.cuda.synchronize()
 
     return {
-        "loss": batch_loss,
-        "loss_norm": loss_norm,
+        "loss": loss,
+        "loss_norm": norm,
     }
 
 def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, train_conf: TrainingConfig, last_train_step_stats: dict):
