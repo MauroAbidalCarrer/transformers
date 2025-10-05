@@ -190,6 +190,9 @@ def training_step(
 
     # Clip gradients and compute their norm
     loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
     # Abort step if grads exploded
     if not math.isfinite(loss_norm):
@@ -313,7 +316,7 @@ master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory u
 if torch_config.using_ddp:
     model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
 optimizer = mk_optimizer(model, train_conf)
-# scheduler = WarmupCosineScheduler(optimizer, train_conf.n_training_steps, train_conf.n_warmup_steps, train_conf.min_lr)
+
 def _get_lr(it: int):
     # 1) linear warmup for warmup_iters steps
     if it < train_conf.n_warmup_steps:
@@ -327,24 +330,6 @@ def _get_lr(it: int):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
     return train_conf.min_lr + coeff * (train_conf.max_lr - train_conf.min_lr)
 
-#def _get_lr(it: int):
- #   # 1) linear warmup for warmup_iters steps
- #   if it < train_conf.n_warmup_steps:
- #       return train_conf.max_lr * (it + 1) / train_conf.n_warmup_steps
-
- #   # 2) if past total training steps, return min_lr
- #   if it > train_conf.n_training_steps:
- #       return train_conf.min_lr
-
-#    # 3) compute cycle iteration (modulo cycle_duration)
-#    cycle_it = (it - train_conf.n_warmup_steps) % train_conf.cycle_duration
-#    decay_ratio = cycle_it / train_conf.cycle_duration
-#    assert 0 <= decay_ratio <= 1
-
-#    # cosine annealing from max_lr to min_lr within current cycle
-#    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-#    lr = train_conf.min_lr + coeff * (train_conf.max_lr - train_conf.min_lr)
-#    return lr
 
 def get_lr(it: int) -> float:
     return _get_lr(it) / 1.5
@@ -411,7 +396,7 @@ torch.save(model_state, "latest_model_params.pth")
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=torch_config.device)
 
-generate_text(model, tokenizer, torch_config)
+# generate_text(model, tokenizer, torch_config)
 
 if torch_config.using_ddp:
     destroy_process_group()
