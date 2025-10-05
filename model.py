@@ -32,23 +32,38 @@ class MultiHeadMaskedAttention(nn.Module):
         y = y.reshape(batch_size, seq_len, n_embed) # (batch size, seq len, embed)
         return y
 
-class MLPBlock(nn.Sequential):
+class MLP(nn.Module):
+
     def __init__(self, config: GPTConfig):
-        n_expanded_dims = config.n_embed_dim * 4
-        proj_layer = nn.Linear(n_expanded_dims, config.n_embed_dim)
-        proj_layer.is_proj_layer = True
-        super().__init__(
-            nn.LayerNorm(config.n_embed_dim),
-            nn.Linear(config.n_embed_dim, n_expanded_dims),
-            nn.GELU(),
-            proj_layer,
-        )
+        super().__init__()
+        self.c_fc    = nn.Linear(config.n_embed_dim, 4 * config.n_embed_dim)
+        self.gelu    = nn.GELU(approximate='tanh')
+        self.c_proj  = nn.Linear(4 * config.n_embed_dim, config.n_embed_dim)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        return x
+
+# class MLPBlock(nn.Sequential):
+#     def __init__(self, config: GPTConfig):
+#         n_expanded_dims = config.n_embed_dim * 4
+#         proj_layer = nn.Linear(n_expanded_dims, config.n_embed_dim)
+#         proj_layer.is_proj_layer = True
+#         super().__init__(
+#             nn.LayerNorm(config.n_embed_dim),
+#             nn.Linear(config.n_embed_dim, n_expanded_dims),
+#             nn.GELU(),
+#             proj_layer,
+#         )
 
 class TransformerBlock(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.attention_head = MultiHeadMaskedAttention(config)
-        self.mlp = MLPBlock(config)
+        self.mlp = MLP(config)
 
     def forward(self, x: Tensor) -> Tensor:
         x = x + self.attention_head(x)
