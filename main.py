@@ -29,12 +29,12 @@ from hella_swag import iterate_examples, render_example
 from optimization_utils import mk_optimizer
 
 
-def setup_torch(torch_config: TorchConfig):
-    if torch_config.using_ddp:
+def setup_torch(torch_conf: TorchConfig):
+    if torch_conf.using_ddp:
         init_process_group(backend="nccl")
-    torch.cuda.set_device(torch_config.device)
     torch.manual_seed(1337)
     if torch.cuda.is_available():
+        torch.cuda.set_device(torch_conf.device)
         torch.cuda.manual_seed(1337)
 
 def master_print(*args, **kwargs):

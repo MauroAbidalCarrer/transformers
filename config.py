@@ -85,5 +85,8 @@ class TorchConfig:
         self.ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
 
         self.is_master_process = (self.ddp_local_rank == 0)
-        self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+        if torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{self.ddp_local_rank}")
+        else:
+            self.device = torch.device("cpu")
         self.device_type = self.device.type    
