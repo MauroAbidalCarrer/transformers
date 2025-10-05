@@ -286,7 +286,7 @@ master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory u
 if torch_config.using_ddp:
     model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
 # optimizer = mk_optimizer(model, train_conf)
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=torch_config.device_typ)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, torch_conf=torch_config)
 
 def _get_lr(it: int):
     # 1) linear warmup for warmup_iters steps
