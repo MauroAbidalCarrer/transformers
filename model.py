@@ -36,6 +36,7 @@ class MultiHeadMaskedAttention(nn.Module):
         y = F.scaled_dot_product_attention(queries, keys, values, is_causal=True) # (batch size, n_heads, seq len, embed // n_heads)
         y = y.transpose(1, 2) # (batch size, n_heads, seq len, embed)
         y = y.reshape(batch_size, seq_len, n_embed) # (batch size, seq len, embed)
+        y = self.post_head_projection(y)
         return y
 
 class MLPBlock(nn.Sequential):
