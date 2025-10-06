@@ -141,7 +141,7 @@ def training_step(
     for micro_step in range(train_conf.grad_accum_step):
         x, y = data_loader.next_batch()
         x, y = x.to(torch_conf.device), y.to(torch_conf.device)
-        use_sync = micro_step == train_conf.grad_accum_step - 1
+        use_sync = micro_step == train_conf.grad_accum_step - 1 and torch_conf.using_ddp
         sync_ctx = nullcontext if use_sync else model.no_sync
         with sync_ctx():
             with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
@@ -158,8 +158,6 @@ def training_step(
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
     optimizer.step()
-    if torch_conf.device_type == "cuda":
-        torch.cuda.synchronize() # wait for the GPU to finish work
 
     if torch_config.device.type == "cuda":
         torch.cuda.synchronize()
@@ -260,6 +258,31 @@ train_data_loader = mk_data_loader("train")
 val_data_loader = mk_data_loader("val")
 torch.set_float32_matmul_precision('high')
 model = raw_model = GPT(model_conf).to(torch_config.device)
+if torch_config.is_master_process:
+    num_proj_layers = 0
+    for layer in raw_model.modules():
+        if getattr(layer, 'is_proj_layer', False):
+            num_proj_layers += 1
+            print("is_proj_layer", layer.weight.std())
+        elif hasattr(layer, "weight"):
+            print("no_proj_layer", layer.weight.std())
+    # num_proj_layers = sum(1 for m in raw_model.modules() if getattr(m, 'is_proj_layer', False))
+    print(f"Initialized {num_proj_layers} projection layers with scaled std.")
+
+def check_layernorm_forward_dtypes(model: nn.Module):
+    def hook_fn(module, inputs, outputs):
+        out = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
+        if out.dtype != torch.float32:
+            print(f"[WARN] {module.__class__.__name__} output dtype {out.dtype}, expected float32")
+    for name, mod in model.named_modules():
+        if isinstance(mod, nn.LayerNorm):
+            mod.register_forward_hook(hook_fn)
+check_layernorm_forward_dtypes(model)
+x = torch.randn(2, 16, model.config.n_embed_dim, device=model.config.device)
+with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+    _ = model(x)
+
+
 if train_conf.starting_checkpoint is not None:
     master_print(
         "starting from checkpoint at step",
