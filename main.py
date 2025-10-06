@@ -145,7 +145,7 @@ def training_step(
         sync_ctx = nullcontext if use_sync else model.no_sync
         with sync_ctx():
             with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
-                logits = model(x, y)
+                logits = model(x)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
             loss = loss / train_conf.grad_accum_step
             loss_accum += loss.detach()
@@ -273,7 +273,7 @@ param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
 
 if torch_config.using_ddp:
-    model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
+    model = DDP(model, device_ids=[torch_config.ddp_local_rank]) # Allows us to perform weight updates among the devices.
 optimizer = mk_optimizer(model, train_conf)
 # optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, torch_conf=torch_config)
 
