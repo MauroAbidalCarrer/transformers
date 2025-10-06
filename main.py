@@ -258,30 +258,6 @@ train_data_loader = mk_data_loader("train")
 val_data_loader = mk_data_loader("val")
 torch.set_float32_matmul_precision('high')
 model = raw_model = GPT(model_conf).to(torch_config.device)
-if torch_config.is_master_process:
-    num_proj_layers = 0
-    for layer in raw_model.modules():
-        if getattr(layer, 'is_proj_layer', False):
-            num_proj_layers += 1
-            print("is_proj_layer", layer.weight.std())
-        elif hasattr(layer, "weight"):
-            print("no_proj_layer", layer.weight.std())
-    # num_proj_layers = sum(1 for m in raw_model.modules() if getattr(m, 'is_proj_layer', False))
-    print(f"Initialized {num_proj_layers} projection layers with scaled std.")
-
-def check_layernorm_forward_dtypes(model: nn.Module):
-    def hook_fn(module, inputs, outputs):
-        out = outputs if isinstance(outputs, torch.Tensor) else outputs[0]
-        if out.dtype != torch.float32:
-            print(f"[WARN] {module.__class__.__name__} output dtype {out.dtype}, expected float32")
-    for name, mod in model.named_modules():
-        if isinstance(mod, nn.LayerNorm):
-            mod.register_forward_hook(hook_fn)
-check_layernorm_forward_dtypes(model)
-x = torch.randn(2, 16, model.config.n_embed_dim, device=model.config.device)
-with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-    _ = model(x)
-
 
 if train_conf.starting_checkpoint is not None:
     master_print(
