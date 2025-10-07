@@ -329,8 +329,8 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps + 1):
     if is_last_step or train_conf.step % train_conf.validation_freq == 0:
         validation_step(model, val_data_loader, torch_config, train_conf)
     # hella swag eval
-     if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
-         hella_swag_eval(model, torch_config, train_conf)
+    if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
+        hella_swag_eval(model, torch_config, train_conf)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, train_conf)
     # step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
