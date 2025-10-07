@@ -59,10 +59,8 @@ class TransformerBlock(nn.Module):
         self.mlp = MLPBlock(config)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.attention_layer_norm(x)
-        x = x + self.attention_head(x)
-        x = self.mlp_layer_norm(x)
-        x = x + self.mlp(x)
+        x = x + self.attention_head(self.attention_layer_norm(x))
+        x = x + self.mlp(self.mlp_layer_norm(x))
         return x
 
 class GPT(nn.Module):
