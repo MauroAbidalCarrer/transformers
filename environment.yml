@@ -1,14 +1,14 @@
 name: transformers
 channels:
+  - nvidia
+  - pytorch
   - conda-forge
   - defaults
-
 dependencies:
-  - python=3.11
+  - python=3.11.5
+  - pytorch==2.5.1 
   - numpy=2.3.0
-  - tiktoken=0.11.0
-  - datasets=3.2.0
-  - wandb=0.22.0
+  - tiktoken==0.11.0
+  - datasets==4.1.1
+  - wandb==0.22.0
   - pip
-  - pip:
-      - torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
