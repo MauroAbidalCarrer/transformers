@@ -257,7 +257,7 @@ mk_data_loader = partial(
 train_data_loader = mk_data_loader("train")
 val_data_loader = mk_data_loader("val")
 torch.set_float32_matmul_precision('high')
-model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
+model = raw_model = GPT(model_conf).to(torch_config.device)
 
 if train_conf.starting_checkpoint is not None:
     master_print(
@@ -312,15 +312,15 @@ if torch_config.is_master_process and train_conf.use_wandb:
     )
 # Training loop
 last_step_time = time()
-for _step in range(train_conf.starting_step, train_conf.n_training_steps):    
+for _step in range(train_conf.starting_step, train_conf.n_training_steps + 1):    
     train_conf.step = _step
     is_last_step = train_conf.step == train_conf.n_training_steps - 1
     # Generate text
-    # if is_last_step or train_conf.step % train_conf.text_gen_freq == 0:
-    #     generate_text(raw_model, tokenizer, torch_config, train_conf)
+    if is_last_step or train_conf.step % train_conf.text_gen_freq == 0:
+        generate_text(raw_model, tokenizer, torch_config, train_conf)
     # validation loss
-    # if is_last_step or train_conf.step % train_conf.validation_freq == 0:
-    #     validation_step(model, val_data_loader, torch_config, train_conf)
+    if is_last_step or train_conf.step % train_conf.validation_freq == 0:
+        validation_step(model, val_data_loader, torch_config, train_conf)
     # hella swag eval
     # if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
     #     hella_swag_eval(model, torch_config, train_conf)
