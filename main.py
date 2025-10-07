@@ -257,7 +257,7 @@ mk_data_loader = partial(
 train_data_loader = mk_data_loader("train")
 val_data_loader = mk_data_loader("val")
 torch.set_float32_matmul_precision('high')
-model = raw_model = GPT(model_conf).to(torch_config.device)
+model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
 
 if train_conf.starting_checkpoint is not None:
     master_print(
