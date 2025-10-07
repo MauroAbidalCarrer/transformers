@@ -291,7 +291,7 @@ def _get_lr(it: int):
 
 
 def get_lr(it: int) -> float:
-    return _get_lr(it)
+    return _get_lr(it) * 2
 
 # scheduler = mk_scheduler(optimizer, train_conf)
 if train_conf.starting_checkpoint:
