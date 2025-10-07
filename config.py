@@ -25,7 +25,7 @@ class TrainingConfig:
     n_gpus: int = field(default=0, repr=False)
 
     # optional with defaults
-    micro_batch_size: int = field(default=64)
+    micro_batch_size: int = field(default=8)
     tokens_per_step: int = field(default=2**19)  # ~0.5M tokens
     n_training_steps: int = field(default=19000)
     cycle_duration: int = field(default=400)

@@ -266,7 +266,14 @@ if train_conf.starting_checkpoint is not None:
         "and train loss",
         train_conf.starting_checkpoint["last_train_loss"]
     )
-    model.load_state_dict(train_conf.starting_checkpoint["model"])
+    new_state_dict = {}
+    for k, v in train_conf.starting_checkpoint["model"].items():
+        if k.startswith("_orig_mod."):
+            new_state_dict[k[len("_orig_mod."):]] = v
+        else:
+            new_state_dict[k] = v
+
+    model.load_state_dict(new_state_dict)
 # model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
 param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
@@ -322,8 +329,8 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps + 1):
     if is_last_step or train_conf.step % train_conf.validation_freq == 0:
         validation_step(model, val_data_loader, torch_config, train_conf)
     # hella swag eval
-    # if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
-    #     hella_swag_eval(model, torch_config, train_conf)
+     if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
+         hella_swag_eval(model, torch_config, train_conf)
     # Training step
     step_stats = training_step(model, train_data_loader, torch_config, optimizer, train_conf)
     # step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
