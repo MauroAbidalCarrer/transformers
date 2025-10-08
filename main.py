@@ -1,5 +1,6 @@
 # OMP_NUM_THREADS=1 torchrun --standalone  --nproc_per_node=4 main.py
 import os
+import math
 from time import time
 from functools import partial
 from contextlib import nullcontext
@@ -25,15 +26,15 @@ from config import (
 from model import GPT
 from data_utils import DataLoaderLite
 from hella_swag import iterate_examples, render_example
-from optimization_utils import mk_scheduler, mk_optimizer
+from optimization_utils import mk_optimizer
 
 
-def setup_torch(torch_config: TorchConfig):
-    if torch_config.using_ddp:
+def setup_torch(torch_conf: TorchConfig):
+    if torch_conf.using_ddp:
         init_process_group(backend="nccl")
-    torch.cuda.set_device(torch_config.device)
     torch.manual_seed(1337)
     if torch.cuda.is_available():
+        torch.cuda.set_device(torch_conf.device)
         torch.cuda.manual_seed(1337)
 
 def master_print(*args, **kwargs):
@@ -113,42 +114,60 @@ def hella_swag_eval(model: nn.Module, torch_config: TorchConfig, train_conf: Tra
     if torch_config.is_master_process and train_conf.use_wandb:
         wandb.log({"eval/hellaswag_acc": acc_norm, "step": train_conf.step})
 
+# --- enable bf16 only if device supports it (Ampere or newer) ---
+def _can_use_bfloat16(device: torch.device) -> bool:
+    if not torch.cuda.is_available():
+        return False
+    try:
+        # get capability for current device index
+        major, minor = torch.cuda.get_device_capability(device.index)
+    except Exception:
+        major, minor = torch.cuda.get_device_capability()
+    # Ampere (sm_80) and newer support efficient bfloat16
+    return major >= 8
+
+global printed_dtypes
+printed_dtypes = False
 def training_step(
-        model: nn.Module,
+        model: DDP,
         data_loader: DataLoaderLite,
-        torch_config: TorchConfig,
+        torch_conf: TorchConfig,
         optimizer: Optimizer,
-        scheduler: LRScheduler,
+        train_conf: TrainingConfig,
     ) -> dict:
-    model = model.train()
+    model.train()
     optimizer.zero_grad()
-    batch_loss = 0
+    loss_accum = 0.0
     for micro_step in range(train_conf.grad_accum_step):
-        x, y_true = data_loader.next_batch()
-        x, y_true = x.to(torch_config.device), y_true.to(torch_config.device)
-        # sample a batch of data
-        y_true = y_true.reshape(train_conf.micro_batch_size * model_conf.attention_window_size)
-        use_no_sync_ctx = (micro_step != (train_conf.grad_accum_step - 1)) and torch_config.using_ddp
-        sync_ctx = model.no_sync if use_no_sync_ctx else nullcontext
-        with sync_ctx(), torch.autocast(device_type=torch_config.device.type, dtype=torch.bfloat16):
-            y_pred = model(x).reshape(train_conf.micro_batch_size * model_conf.attention_window_size, model_conf.model_vocab_size)
-            micro_batch_loss = F.cross_entropy(y_pred, y_true) / train_conf.grad_accum_step
-            micro_batch_loss.backward()
-            # Use detach instead of item because we may need to call dist all reduce on it
-        batch_loss += micro_batch_loss.detach()
-    if torch_config.using_ddp:
-        dist.all_reduce(batch_loss, op=dist.ReduceOp.AVG)
-    loss_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        x, y = data_loader.next_batch()
+        x, y = x.to(torch_conf.device), y.to(torch_conf.device)
+        use_sync = micro_step == train_conf.grad_accum_step - 1 and torch_conf.using_ddp
+        sync_ctx = nullcontext if use_sync else model.no_sync
+        with sync_ctx():
+            with torch.autocast(device_type=torch_conf.device_type, dtype=torch.bfloat16):
+                logits = model(x)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+            loss = loss / train_conf.grad_accum_step
+            loss_accum += loss.detach()
+            loss.backward()
+    if torch_conf.using_ddp:
+        dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    # determine and set the learning rate for this iteration
+    lr = get_lr(train_conf.step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
     optimizer.step()
-    scheduler.step()
+
     if torch_config.device.type == "cuda":
-        torch.cuda.synchronize() # wait for the GPU to finish work
+        torch.cuda.synchronize()
+
     return {
-        "loss": batch_loss,
-        "loss_norm": loss_norm,
+        "loss": loss_accum,
+        "loss_norm": norm,
     }
 
-def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRScheduler, train_conf: TrainingConfig, last_train_step_stats: dict):
+def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, train_conf: TrainingConfig, last_train_step_stats: dict):
     os.makedirs("checkpoints", exist_ok=True)
     # optionally write model checkpoints
     checkpoint_path = os.path.join("checkpoints", f"model_{train_conf.step:05d}.pt")
@@ -158,7 +177,7 @@ def save_checkpoint(raw_model: nn.Module, optimizer: Optimizer, scheduler: LRSch
         "step": train_conf.step,
         "last_train_loss": last_train_step_stats['loss'].item(),
         "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
+        # "scheduler": scheduler.state_dict(),
         # rng states (optional but useful if you want full reproducibility)
         "rng_state": torch.get_rng_state(),
         "cuda_rng_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
@@ -205,9 +224,9 @@ def generate_text(raw_model: GPT, tokenizer, torch_conf: TorchConfig, train_conf
         generations.append(decoded)
         print(f"rank {torch_conf.ddp_rank} sample {i}: {decoded}")
     if train_conf.use_wandb and torch_conf.is_master_process:
-        table = wandb.Table(columns=["sample_id", "text"])
+        table = wandb.Table(columns=["step", "sample_id", "text"])
         for i, gen in enumerate(generations):
-            table.add_data(i, gen)
+            table.add_data(train_conf.step, i, gen)
         wandb.log({"generated_text": table}, step=train_conf.step)
 
 # setup
@@ -219,6 +238,11 @@ model_conf = GPTConfig(
 )
 train_conf = TrainingConfig(model_conf, torch_config.ddp_world_size)
 master_print("gradient accumulation steps:", train_conf.grad_accum_step)
+USE_BFLOAT16 = _can_use_bfloat16(torch_config.device)
+master_print("USE_BFLOAT16 autocast:", USE_BFLOAT16)
+# autocast context factory (nullcontext if not available)
+autocast_ctx = partial(torch.autocast, device_type=torch_config.device_type, dtype=torch.bfloat16) if USE_BFLOAT16 else nullcontext
+
 if train_conf.starting_checkpoint is not None:
     master_print("starting checkpoint path = ", train_conf.checkpoint_path)
     model_conf = train_conf.model_config   
@@ -234,6 +258,7 @@ train_data_loader = mk_data_loader("train")
 val_data_loader = mk_data_loader("val")
 torch.set_float32_matmul_precision('high')
 model = raw_model = GPT(model_conf).to(torch_config.device)
+
 if train_conf.starting_checkpoint is not None:
     master_print(
         "starting from checkpoint at step",
@@ -241,20 +266,46 @@ if train_conf.starting_checkpoint is not None:
         "and train loss",
         train_conf.starting_checkpoint["last_train_loss"]
     )
-    model.load_state_dict(train_conf.starting_checkpoint["model"])
+    new_state_dict = {}
+    for k, v in train_conf.starting_checkpoint["model"].items():
+        if k.startswith("_orig_mod."):
+            new_state_dict[k[len("_orig_mod."):]] = v
+        else:
+            new_state_dict[k] = v
+
+    model.load_state_dict(new_state_dict)
 # model = raw_model = torch.compile(GPT(model_conf).to(torch_config.device))
 param_stats = model.get_params_stats()
 master_print(f"number of parameters: {param_stats['count']:.2f}M, model memory usage: {param_stats['mem_usage']:.2f}MB")
 
 if torch_config.using_ddp:
-    model = DDP(model, device_ids=[torch_config.ddp_local_rank], find_unused_parameters=True) # Allows us to perform weight updates among the devices.
+    model = DDP(model, device_ids=[torch_config.ddp_local_rank]) # Allows us to perform weight updates among the devices.
 optimizer = mk_optimizer(model, train_conf)
-scheduler = mk_scheduler(optimizer, train_conf)
+# optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, torch_conf=torch_config)
+
+def _get_lr(it: int):
+    # 1) linear warmup for warmup_iters steps
+    if it < train_conf.n_warmup_steps:
+        return train_conf.max_lr * (it+1) / train_conf.n_warmup_steps
+    # 2) if it > lr_decay_iters, return min learning rate
+    if it > train_conf.n_training_steps:
+        return train_conf.min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - train_conf.n_warmup_steps) / (train_conf.n_training_steps - train_conf.n_warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return train_conf.min_lr + coeff * (train_conf.max_lr - train_conf.min_lr)
+
+
+def get_lr(it: int) -> float:
+    return _get_lr(it) * 2
+
+# scheduler = mk_scheduler(optimizer, train_conf)
 if train_conf.starting_checkpoint:
     optimizer.load_state_dict(train_conf.starting_checkpoint["optimizer"])
-    scheduler.load_state_dict(train_conf.starting_checkpoint["scheduler"])
+    # scheduler.load_state_dict(train_conf.starting_checkpoint["scheduler"])
     torch.set_rng_state(train_conf.starting_checkpoint["rng_state"])
-    torch.cuda.set_rng_state_all(train_conf.starting_checkpoint["cuda_rng_state"])
+    # torch.cuda.set_rng_state_all(train_conf.starting_checkpoint["cuda_rng_state"])
 
 tokenizer = tiktoken.get_encoding(ENCODING_NAME)
 if torch_config.is_master_process and train_conf.use_wandb:
@@ -268,7 +319,7 @@ if torch_config.is_master_process and train_conf.use_wandb:
     )
 # Training loop
 last_step_time = time()
-for _step in range(train_conf.starting_step, train_conf.n_training_steps):    
+for _step in range(train_conf.starting_step, train_conf.n_training_steps + 1):    
     train_conf.step = _step
     is_last_step = train_conf.step == train_conf.n_training_steps - 1
     # Generate text
@@ -281,33 +332,37 @@ for _step in range(train_conf.starting_step, train_conf.n_training_steps):
     if is_last_step or train_conf.step % train_conf.hella_swag_eval_freq == 0:
         hella_swag_eval(model, torch_config, train_conf)
     # Training step
-    step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
+    step_stats = training_step(model, train_data_loader, torch_config, optimizer, train_conf)
+    # step_stats = training_step(model, train_data_loader, torch_config, optimizer, scheduler)
     # logging
     current_time = time()
     step_dt_ms = (current_time - last_step_time) * 1000
     tokens_per_sec = train_conf.tokens_per_step / (current_time - last_step_time)
-    lr = scheduler.get_last_lr()
-    master_print(f"step {train_conf.step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr[0]:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
+    # lr = scheduler.get_last_lr()
+    lr = get_lr(train_conf.step)
+    master_print(f"step {train_conf.step:4d} | batch loss {step_stats['loss']:5.3f} | batch loss norm {step_stats['loss_norm']:3.1f} | lr {lr:10.7f} | dt {step_dt_ms:5.3f}ms | {tokens_per_sec:5.1f} tokens/s")
     last_step_time = current_time
     if torch_config.is_master_process and train_conf.use_wandb:
         wandb.log({
             "train/loss": step_stats['loss'].item(),
             "train/loss_norm": step_stats['loss_norm'].item(),
-            "train/lr": lr[0],
+            "train/lr": get_lr(train_conf.step),
+            # "train/lr": lr[0],
             "train/tokens_per_sec": tokens_per_sec,
             "train/step_time_ms": step_dt_ms,
+            "step": train_conf.step,
         })
     # checkpoints
     in_checkpoint_step = train_conf.step > 0 and (train_conf.step % train_conf.save_checkpoint_freq == 0 or train_conf.step == train_conf.n_training_steps - 1)
     if torch_config.is_master_process and in_checkpoint_step:
-        save_checkpoint(raw_model, optimizer, scheduler, train_conf, step_stats)
+        save_checkpoint(raw_model, optimizer, train_conf, step_stats)
 
 model_state = model.state_dict()
 torch.save(model_state, "latest_model_params.pth")
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=torch_config.device)
 
-generate_text(model, tokenizer, torch_config)
+# generate_text(model, tokenizer, torch_config)
 
 if torch_config.using_ddp:
     destroy_process_group()

@@ -1,3 +1,4 @@
+import inspect
 from functools import partial
 
 import torch
@@ -5,7 +6,7 @@ from torch import nn
 from torch import Tensor
 from torch.nn import functional as F
 
-from config import GPTConfig
+from config import GPTConfig, TorchConfig
 
 
 class MultiHeadMaskedAttention(nn.Module):
@@ -23,13 +24,19 @@ class MultiHeadMaskedAttention(nn.Module):
         batch_size, seq_len, n_embed = x.shape
         # Compute the queries, keys and values in a single linear forward pass and then split them into separate views.
         queries, keys, values = self.qkv_weights(x).split(n_embed, -1)
-        shape_for_attention = (batch_size, seq_len, self.config.n_heads, n_embed // self.config.n_heads)
+        shape_for_attention = (
+            batch_size,
+            seq_len,
+            self.config.n_heads,
+            n_embed // self.config.n_heads,
+        )
         queries = queries.reshape(*shape_for_attention).transpose(1, 2)
         keys = keys.reshape(*shape_for_attention).transpose(1, 2)
         values = values.reshape(*shape_for_attention).transpose(1, 2)
         y = F.scaled_dot_product_attention(queries, keys, values, is_causal=True) # (batch size, n_heads, seq len, embed // n_heads)
         y = y.transpose(1, 2) # (batch size, n_heads, seq len, embed)
         y = y.reshape(batch_size, seq_len, n_embed) # (batch size, seq len, embed)
+        y = self.post_head_projection(y)
         return y
 
 class MLPBlock(nn.Sequential):
@@ -38,7 +45,6 @@ class MLPBlock(nn.Sequential):
         proj_layer = nn.Linear(n_expanded_dims, config.n_embed_dim)
         proj_layer.is_proj_layer = True
         super().__init__(
-            nn.LayerNorm(config.n_embed_dim),
             nn.Linear(config.n_embed_dim, n_expanded_dims),
             nn.GELU(),
             proj_layer,
@@ -47,12 +53,14 @@ class MLPBlock(nn.Sequential):
 class TransformerBlock(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
+        self.attention_layer_norm = nn.LayerNorm(config.n_embed_dim)
         self.attention_head = MultiHeadMaskedAttention(config)
+        self.mlp_layer_norm = nn.LayerNorm(config.n_embed_dim)
         self.mlp = MLPBlock(config)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = x + self.attention_head(x)
-        x = x + self.mlp(x)
+        x = x + self.attention_head(self.attention_layer_norm(x))
+        x = x + self.mlp(self.mlp_layer_norm(x))
         return x
 
 class GPT(nn.Module):
@@ -79,7 +87,6 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-
     def forward(self, tokens_idx: Tensor) -> Tensor:
         seq_len = tokens_idx.shape[1]
         token_postions = torch.arange(seq_len, device=tokens_idx.device)
@@ -93,7 +100,7 @@ class GPT(nn.Module):
     def generate(self, tokens: Tensor, max_new_tokens: int) -> Tensor:
         # idx is (B, T) array of indices in the current context
         for _ in range(max_new_tokens):
-            # crop idx to the last block_size tokens
+            # crop idx to the last attention_window_size tokens
             idx_cond = tokens[:, -self.config.attention_window_size:]
             logits = self(idx_cond)
             # only get the next prediction of the last token, i.e the pred for the next token (B, C)
