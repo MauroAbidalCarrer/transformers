@@ -1,4 +1,0 @@
-A100 bfloat16 Tflops = 312
-H100 bfloat16 Tflops = 1,979
-4xH100 price = 5.422 $/hr, 28_497_600T flop/hr, 5_255_920 Tflop/$, 15M tokens/s
-4xA100 price = 2.12 $/hr, 4_492_800T flop/hr, 2_119_245/$, 7.5M tokens/s (Based on the Andrej Karpathy 15M tokens/s on 8xA100s) 
